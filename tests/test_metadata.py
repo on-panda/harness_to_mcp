@@ -6,4 +6,4 @@ def test_metadata_values() -> None:
     assert __version__ == "0.1.0"
     assert "MCP" in __description__
     assert __author__ == "DIYer22"
-    assert __url__ == "https://github.com/DIYer22/harness_to_mcp"
+    assert __url__ == "https://github.com/on-panda/harness_to_mcp"

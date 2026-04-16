@@ -12,64 +12,56 @@ from uuid import uuid4
 
 import anyio
 
-from .openai_chat import CompletionPayload, ToolCallSpec, extract_tool_results, extract_tools
-from .opencode import OpencodeRuntime, create_runtime
+from .adapters import HijackRequest, ToolCallSpec, TurnPayload
+from .launchers import HarnessLauncher, HarnessRuntime, LAUNCH_PROMPT, launcher_for_adapter
 
 logger = logging.getLogger(__name__)
 
 HIJACK_CONNECT_TIMEOUT_SECONDS = 30
 ACTIVE_REQUEST_GRACE_SECONDS = 2
+INITIAL_EXTERNAL_HARNESS_WAIT_SECONDS = 2
 
 
 @dataclass(slots=True)
 class ActiveHijackRequest:
     model: str
     stream: bool
-    response_future: asyncio.Future[CompletionPayload]
+    response_future: asyncio.Future[TurnPayload]
     created_at: float
 
 
-class OpencodeHarnessLauncher:
-    def __init__(self, *, base_url: str, prompt: str) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.prompt = prompt
-
-    def create_process(self, session_id: str, workdir: str) -> tuple[OpencodeRuntime, subprocess.Popen[str]]:
-        runtime = create_runtime(base_url=self.base_url, session_token=session_id, prompt=self.prompt)
-        with runtime.log_path.open("a", encoding="utf-8", buffering=1) as log_handle:
-            process = subprocess.Popen(
-                runtime.command,
-                cwd=workdir,
-                env=runtime.env,
-                stdin=subprocess.DEVNULL,
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-        return runtime, process
-
-
 class HarnessSessionBridge:
-    def __init__(self, *, session_id: str, workdir: str, launcher: OpencodeHarnessLauncher) -> None:
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        workdir: str,
+        base_url_root: str,
+        launchers: dict[str, HarnessLauncher],
+        default_launcher_name: str | None,
+    ) -> None:
         self.session_id = session_id
         self.workdir = workdir
-        self.launcher = launcher
+        self.base_url_root = base_url_root.rstrip("/")
+        self.launchers = launchers
+        self.launcher_name = default_launcher_name
         self.lock = anyio.Lock()
         self.process: subprocess.Popen[str] | None = None
-        self.runtime: OpencodeRuntime | None = None
-        self.launch_started_at = 0.0
+        self.runtime: HarnessRuntime | None = None
         self.last_harness_activity_at = 0.0
-        self.tools = []
+        self.tools: list[Any] = []
         self.active_request: ActiveHijackRequest | None = None
-        self.pending_tool_results: dict[str, asyncio.Future[str]] = {}
+        self.pending_tool_results: dict[str, asyncio.Future[Any]] = {}
         self.mcp_open = True
         self._tools_ready = anyio.Event()
         self._active_request_ready = anyio.Event()
+        self.external_harness_wait_deadline = (
+            time.monotonic() + INITIAL_EXTERNAL_HARNESS_WAIT_SECONDS if default_launcher_name else 0.0
+        )
 
     async def on_initialize(self) -> None:
         async with self.lock:
             self.mcp_open = True
-            await self._start_harness_locked(restart=self.process is None or self.process.poll() is not None)
 
     async def close(self) -> None:
         async with self.lock:
@@ -91,12 +83,12 @@ class HarnessSessionBridge:
             await event.wait()
         return self.tools
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         active_request = await self._ensure_active_request(HIJACK_CONNECT_TIMEOUT_SECONDS)
         loop = asyncio.get_running_loop()
         call_id = f"call_{uuid4().hex}"
         result_future = loop.create_future()
-        response = CompletionPayload(
+        response = TurnPayload(
             model=active_request.model,
             tool_call=ToolCallSpec(call_id=call_id, name=name, arguments=arguments),
         )
@@ -110,24 +102,25 @@ class HarnessSessionBridge:
             self._active_request_ready = anyio.Event()
         return await result_future
 
-    async def on_hijack_request(self, body: dict[str, Any], model: str, stream: bool) -> ActiveHijackRequest:
-        tool_results = extract_tool_results(body)
-        tools = extract_tools(body)
+    async def on_hijack_request(self, *, adapter_name: str, request: HijackRequest) -> ActiveHijackRequest:
         loop = asyncio.get_running_loop()
         active_request = ActiveHijackRequest(
-            model=model,
-            stream=stream,
+            model=request.model,
+            stream=request.stream,
             response_future=loop.create_future(),
             created_at=time.monotonic(),
         )
         async with self.lock:
+            inferred = launcher_for_adapter(self.launchers, adapter_name)
+            if inferred is not None:
+                self.launcher_name = inferred
             self.last_harness_activity_at = time.monotonic()
-            for tool_result in tool_results:
+            for tool_result in request.tool_results:
                 result_future = self.pending_tool_results.pop(tool_result.tool_call_id, None)
                 if result_future is not None and not result_future.done():
                     result_future.set_result(tool_result.content)
-            if tools:
-                self.tools = tools
+            if request.tools:
+                self.tools = request.tools
                 self._tools_ready.set()
             self._clear_active_request_locked(RuntimeError("Hijack API request replaced by a newer request."))
             self.active_request = active_request
@@ -143,13 +136,26 @@ class HarnessSessionBridge:
         active_request = self.active_request
         if active_request is not None:
             return active_request
-        wait_started_at = time.monotonic()
-        if self._should_restart_harness(wait_started_at):
+
+        started_at = time.monotonic()
+        remaining_timeout = timeout_seconds
+        if self.launcher_name is not None and started_at < self.external_harness_wait_deadline:
+            grace_timeout = min(remaining_timeout, self.external_harness_wait_deadline - started_at)
+            event = self._active_request_ready
+            with anyio.move_on_after(grace_timeout):
+                await event.wait()
+            active_request = self.active_request
+            if active_request is not None:
+                return active_request
+            remaining_timeout = max(0.1, timeout_seconds - (time.monotonic() - started_at))
+
+        now = time.monotonic()
+        if self._should_restart_harness(now):
             async with self.lock:
-                if self._should_restart_harness(wait_started_at):
-                    await self._start_harness_locked(restart=True)
+                if self._should_restart_harness(now):
+                    await self._start_harness_locked(restart=self.process is not None or self.runtime is not None)
         event = self._active_request_ready
-        with anyio.fail_after(timeout_seconds):
+        with anyio.fail_after(remaining_timeout):
             await event.wait()
         active_request = self.active_request
         if active_request is None:
@@ -157,16 +163,20 @@ class HarnessSessionBridge:
         return active_request
 
     def _should_restart_harness(self, now: float) -> bool:
+        if self.launcher_name is None:
+            return False
         if self.process is None or self.process.poll() is not None:
+            if now < self.external_harness_wait_deadline:
+                return False
             return True
         if self.active_request is not None:
             return False
-        if now - self.last_harness_activity_at <= ACTIVE_REQUEST_GRACE_SECONDS:
-            return False
-        return True
+        return now - self.last_harness_activity_at > ACTIVE_REQUEST_GRACE_SECONDS
 
     async def _start_harness_locked(self, restart: bool) -> None:
         if not self.mcp_open:
+            return
+        if self.launcher_name is None:
             return
         if restart:
             await self._stop_harness_locked()
@@ -176,9 +186,14 @@ class HarnessSessionBridge:
             self._tools_ready = anyio.Event()
         if self.process is not None and self.process.poll() is None:
             return
-        self.runtime, self.process = self.launcher.create_process(self.session_id, self.workdir)
-        self.launch_started_at = time.monotonic()
-        logger.info("Started harness for session %s with pid %s", self.session_id, self.process.pid)
+        launcher = self.launchers[self.launcher_name]
+        self.runtime, self.process = launcher.create_process(
+            base_url_root=self.base_url_root,
+            session_token=self.session_id,
+            prompt=LAUNCH_PROMPT,
+            workdir=self.workdir,
+        )
+        logger.info("Started %s harness for session %s with pid %s", launcher.name, self.session_id, self.process.pid)
 
     async def _stop_harness_locked(self) -> None:
         process = self.process
@@ -218,9 +233,18 @@ class HarnessSessionBridge:
 
 
 class HarnessSessionRegistry:
-    def __init__(self, *, workdir: str, launcher: OpencodeHarnessLauncher) -> None:
+    def __init__(
+        self,
+        *,
+        workdir: str,
+        base_url_root: str,
+        launchers: dict[str, HarnessLauncher],
+        default_launcher_name: str | None,
+    ) -> None:
         self.workdir = str(Path(workdir).resolve())
-        self.launcher = launcher
+        self.base_url_root = base_url_root.rstrip("/")
+        self.launchers = launchers
+        self.default_launcher_name = default_launcher_name
         self.lock = anyio.Lock()
         self.sessions: dict[str, HarnessSessionBridge] = {}
 
@@ -238,25 +262,27 @@ class HarnessSessionRegistry:
         async with self.lock:
             session = self.sessions.get(session_id)
             if session is None:
-                session = HarnessSessionBridge(session_id=session_id, workdir=self.workdir, launcher=self.launcher)
+                session = HarnessSessionBridge(
+                    session_id=session_id,
+                    workdir=self.workdir,
+                    base_url_root=self.base_url_root,
+                    launchers=self.launchers,
+                    default_launcher_name=self.default_launcher_name,
+                )
                 self.sessions[session_id] = session
             return session
 
     async def ensure_tools_ready(self, session_id: str, timeout_seconds: float = HIJACK_CONNECT_TIMEOUT_SECONDS) -> list[Any]:
-        session = await self.ensure_session(session_id)
-        return await session.ensure_tools_ready(timeout_seconds)
+        return await (await self.ensure_session(session_id)).ensure_tools_ready(timeout_seconds)
 
-    async def call_tool(self, session_id: str, name: str, arguments: dict[str, Any]) -> str:
-        session = await self.ensure_session(session_id)
-        return await session.call_tool(name, arguments)
+    async def call_tool(self, session_id: str, name: str, arguments: dict[str, Any]) -> Any:
+        return await (await self.ensure_session(session_id)).call_tool(name, arguments)
 
-    async def on_hijack_request(self, session_id: str, body: dict[str, Any], model: str, stream: bool) -> ActiveHijackRequest:
-        session = await self.ensure_session(session_id)
-        return await session.on_hijack_request(body, model, stream)
+    async def on_hijack_request(self, session_id: str, *, adapter_name: str, request: HijackRequest) -> ActiveHijackRequest:
+        return await (await self.ensure_session(session_id)).on_hijack_request(adapter_name=adapter_name, request=request)
 
     async def release_hijack_request(self, session_id: str, active_request: ActiveHijackRequest) -> None:
         async with self.lock:
             session = self.sessions.get(session_id)
-        if session is None:
-            return
-        await session.release_hijack_request(active_request)
+        if session is not None:
+            await session.release_hijack_request(active_request)

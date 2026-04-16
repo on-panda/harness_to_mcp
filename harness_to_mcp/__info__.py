@@ -6,8 +6,8 @@ __author_email__ = "ylxx@live.com"
 __maintainer__ = "DIYer22"
 __maintainer_email__ = "ylxx@live.com"
 __github_username__ = "DIYer22"
-__url__ = "https://github.com/DIYer22/harness_to_mcp"
-__issues__ = "https://github.com/DIYer22/harness_to_mcp/issues"
+__url__ = "https://github.com/on-panda/harness_to_mcp"
+__issues__ = "https://github.com/on-panda/harness_to_mcp/issues"
 __support__ = __issues__
 __classifiers__ = [
     "Development Status :: 3 - Alpha",

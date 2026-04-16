@@ -29,41 +29,31 @@ from mcp.server.streamable_http import (
     Request,
     Response,
     Scope,
-    Send,
     StreamableHTTPServerTransport,
 )
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from starlette.applications import Starlette
 from starlette.datastructures import MutableHeaders
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
-from starlette.applications import Starlette
 
 from .__info__ import __description__, __version__
-from .bridge import HIJACK_CONNECT_TIMEOUT_SECONDS, HarnessSessionRegistry, OpencodeHarnessLauncher
-from .openai_chat import (
-    HIJACK_MODEL_ID,
-    CompletionPayload,
-    build_json_response,
-    build_stream_chunks,
-    build_stream_heartbeat,
-    default_text_response,
-    openai_error,
-    request_has_tools,
-)
-from .opencode import LAUNCH_PROMPT, run_opencode
+from .adapters import HIJACK_MODEL_ID, ApiAdapter, TurnPayload, adapter_routes, build_adapters, tool_result_to_mcp_content
+from .bridge import HIJACK_CONNECT_TIMEOUT_SECONDS, HarnessSessionRegistry
+from .launchers import HarnessLauncher, build_launchers
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9330
 DEFAULT_HEARTBEAT_SECONDS = 600
-OPENCODE_PROBE_TIMEOUT_SECONDS = 1.5
+SERVER_PROBE_TIMEOUT_SECONDS = 1.5
 CORS_EXPOSE_HEADERS = ["mcp-session-id", "mcp-protocol-version"]
 MCP_PATHS = ("/mcp", "/harness_to_mcp/mcp")
-CHAT_COMPLETIONS_PATH = "/harness_to_mcp/v1/chat/completions"
 MODELS_PATH = "/harness_to_mcp/v1/models"
+HEALTH_PATH = "/harness_to_mcp/health"
 
 
 class MCPAcceptCompatibilityMiddleware:
@@ -102,9 +92,17 @@ class HarnessTransport(StreamableHTTPServerTransport):
 
 
 class HarnessSessionManager(StreamableHTTPSessionManager):
-    def __init__(self, *, app: Server[Any, Any], registry: HarnessSessionRegistry, json_response: bool) -> None:
+    def __init__(
+        self,
+        *,
+        app: Server[Any, Any],
+        registry: HarnessSessionRegistry,
+        json_response: bool,
+        pinned_session_id: str | None = None,
+    ) -> None:
         super().__init__(app=app, json_response=json_response, stateless=False)
         self.registry = registry
+        self.pinned_session_id = pinned_session_id
 
     async def _handle_stateful_request(self, scope: Scope, receive, send) -> None:
         request = Request(scope, receive)
@@ -117,7 +115,9 @@ class HarnessSessionManager(StreamableHTTPSessionManager):
 
         if request_mcp_session_id is None:
             async with self._session_creation_lock:
-                new_session_id = uuid4().hex
+                new_session_id = self.pinned_session_id or uuid4().hex
+                if new_session_id in self._server_instances:
+                    new_session_id = uuid4().hex
                 transport = HarnessTransport(
                     session_id=new_session_id,
                     registry=self.registry,
@@ -164,7 +164,9 @@ class HarnessSessionManager(StreamableHTTPSessionManager):
 @dataclass(slots=True)
 class AppState:
     registry: HarnessSessionRegistry
-    mcp_server: Server[Any, Any]
+    adapters: dict[str, ApiAdapter]
+    launchers: dict[str, HarnessLauncher]
+    helper_harness_name: str | None
     heartbeat_seconds: int
 
 
@@ -176,11 +178,15 @@ class HarnessToMcp:
         port: int = DEFAULT_PORT,
         workdir: str | None = None,
         heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS,
+        helper_harness_name: str | None = None,
+        pinned_session_id: str | None = None,
     ) -> None:
         self.host = host
         self.port = _pick_port(port)
         self.workdir = os.path.abspath(workdir or os.getcwd())
         self.heartbeat_seconds = heartbeat_seconds
+        self.helper_harness_name = helper_harness_name
+        self.pinned_session_id = pinned_session_id
         self._thread: threading.Thread | None = None
         self._server: uvicorn.Server | None = None
 
@@ -193,8 +199,16 @@ class HarnessToMcp:
         return f"{self.base_url}/mcp"
 
     @property
+    def hijack_root_url(self) -> str:
+        return f"{self.base_url}/harness_to_mcp"
+
+    @property
     def hijack_base_url(self) -> str:
-        return f"{self.base_url}/harness_to_mcp/v1"
+        return f"{self.hijack_root_url}/v1"
+
+    @property
+    def anthropic_base_url(self) -> str:
+        return self.hijack_root_url
 
     def start(self) -> None:
         if self._thread is not None:
@@ -204,6 +218,8 @@ class HarnessToMcp:
             port=self.port,
             workdir=self.workdir,
             heartbeat_seconds=self.heartbeat_seconds,
+            helper_harness_name=self.helper_harness_name,
+            pinned_session_id=self.pinned_session_id,
         )
         config = uvicorn.Config(app, host=self.host, port=self.port, log_level="info")
         server = uvicorn.Server(config)
@@ -233,21 +249,20 @@ class HarnessToMcp:
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="harness_to_mcp",
-        description=__description__,
-    )
+    parser = argparse.ArgumentParser(prog="harness_to_mcp", description=__description__)
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--workdir", default=os.getcwd())
     subparsers = parser.add_subparsers(dest="subcommand")
 
-    opencode_parser = subparsers.add_parser("opencode", help="Launch opencode against the hijack API server.")
-    opencode_parser.add_argument("--host", default=DEFAULT_HOST)
-    opencode_parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    opencode_parser.add_argument("--session-token")
-    opencode_parser.add_argument("--prompt", default=LAUNCH_PROMPT)
-    opencode_parser.add_argument("--workdir", default=os.getcwd())
+    launchers = build_launchers()
+    for name in sorted(launchers):
+        sub = subparsers.add_parser(name, help=f"Launch {name} against the hijack API server.")
+        sub.add_argument("--host", default=DEFAULT_HOST)
+        sub.add_argument("--port", type=int, default=DEFAULT_PORT)
+        sub.add_argument("--session-token")
+        sub.add_argument("--prompt", default=_launch_prompt_for(launchers[name]))
+        sub.add_argument("--workdir", default=os.getcwd())
     return parser
 
 
@@ -257,82 +272,47 @@ def create_app(
     port: int = DEFAULT_PORT,
     workdir: str | None = None,
     heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS,
+    helper_harness_name: str | None = None,
+    pinned_session_id: str | None = None,
 ) -> Starlette:
     connect_host = _connect_host(host)
-    base_url = f"http://{connect_host}:{port}/harness_to_mcp/v1"
+    base_url_root = f"http://{connect_host}:{port}/harness_to_mcp"
+    launchers = build_launchers()
+    if helper_harness_name is not None and helper_harness_name not in launchers:
+        raise ValueError(f"Unknown helper harness: {helper_harness_name}")
+    adapters = build_adapters()
     registry = HarnessSessionRegistry(
         workdir=workdir or os.getcwd(),
-        launcher=OpencodeHarnessLauncher(base_url=base_url, prompt=LAUNCH_PROMPT),
+        base_url_root=base_url_root,
+        launchers=launchers,
+        default_launcher_name=helper_harness_name,
     )
     mcp_server = _build_mcp_server(registry)
-    state = AppState(registry=registry, mcp_server=mcp_server, heartbeat_seconds=heartbeat_seconds)
-    session_manager = HarnessSessionManager(app=mcp_server, registry=registry, json_response=True)
+    state = AppState(
+        registry=registry,
+        adapters=adapters,
+        launchers=launchers,
+        helper_harness_name=helper_harness_name,
+        heartbeat_seconds=heartbeat_seconds,
+    )
+    session_manager = HarnessSessionManager(
+        app=mcp_server,
+        registry=registry,
+        json_response=True,
+        pinned_session_id=pinned_session_id,
+    )
     mcp_http_app = StreamableHTTPASGIApp(session_manager)
 
-    async def models_endpoint(_: StarletteRequest) -> JSONResponse:
-        return JSONResponse(
-            {
-                "object": "list",
-                "data": [
-                    {
-                        "id": HIJACK_MODEL_ID,
-                        "object": "model",
-                        "created": int(time.time()),
-                        "owned_by": "harness_to_mcp",
-                    }
-                ],
-            }
-        )
+    routes = [
+        Route("/mcp", endpoint=mcp_http_app, methods=["GET", "POST", "DELETE"]),
+        Route("/harness_to_mcp/mcp", endpoint=mcp_http_app, methods=["GET", "POST", "DELETE"]),
+        Route(MODELS_PATH, endpoint=_models_endpoint, methods=["GET"]),
+        Route(HEALTH_PATH, endpoint=_health_endpoint, methods=["GET"]),
+    ]
+    for path, adapter in adapter_routes(adapters).items():
+        routes.append(Route(path, endpoint=_make_hijack_endpoint(state, adapter), methods=["POST"]))
 
-    async def chat_completions_endpoint(request: StarletteRequest):
-        session_id = _extract_bearer_token(request.headers.get("authorization"))
-        if not session_id:
-            return JSONResponse(openai_error("Missing bearer token for harness session."), status_code=401)
-        try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            return JSONResponse(openai_error("Invalid JSON request body."), status_code=400)
-
-        model = body.get("model") or HIJACK_MODEL_ID
-        stream = bool(body.get("stream"))
-        if not request_has_tools(body):
-            payload = CompletionPayload(model=model, text=default_text_response(body))
-            if stream:
-                return StreamingResponse(
-                    _iter_static_chunks(build_stream_chunks(payload)),
-                    media_type="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-                )
-            return JSONResponse(build_json_response(payload))
-
-        active_request = await state.registry.on_hijack_request(session_id, body, model, stream)
-        if stream:
-            return StreamingResponse(
-                _stream_hijack_response(
-                    registry=state.registry,
-                    session_id=session_id,
-                    active_request=active_request,
-                    heartbeat_seconds=state.heartbeat_seconds,
-                ),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-            )
-        try:
-            payload = await active_request.response_future
-        except RuntimeError as exc:
-            await state.registry.release_hijack_request(session_id, active_request)
-            return JSONResponse(openai_error(str(exc)), status_code=503)
-        await state.registry.release_hijack_request(session_id, active_request)
-        return JSONResponse(build_json_response(payload))
-
-    app = Starlette(
-        routes=[
-            Route("/mcp", endpoint=mcp_http_app, methods=["GET", "POST", "DELETE"]),
-            Route("/harness_to_mcp/mcp", endpoint=mcp_http_app, methods=["GET", "POST", "DELETE"]),
-            Route(MODELS_PATH, endpoint=models_endpoint, methods=["GET"]),
-            Route(CHAT_COMPLETIONS_PATH, endpoint=chat_completions_endpoint, methods=["POST"]),
-        ],
-    )
+    app = Starlette(routes=routes)
     app.state.harness_to_mcp = state
     app.add_middleware(MCPAcceptCompatibilityMiddleware, paths=MCP_PATHS)
     app.add_middleware(
@@ -355,43 +335,126 @@ def create_app(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_argument_parser()
     args = parser.parse_args(argv)
-    if args.subcommand == "opencode":
-        if args.port == 0:
-            with HarnessToMcp(host=args.host, port=0, workdir=args.workdir) as server:
-                return run_opencode(
-                    base_url=server.hijack_base_url,
-                    session_token=args.session_token,
-                    prompt=args.prompt,
-                    workdir=args.workdir,
-                )
-        base_url = f"http://{_connect_host(args.host)}:{args.port}/harness_to_mcp/v1"
-        if _is_local_host(args.host) and not _hijack_server_is_ready(base_url):
-            with HarnessToMcp(host=args.host, port=args.port, workdir=args.workdir) as server:
-                return run_opencode(
-                    base_url=server.hijack_base_url,
-                    session_token=args.session_token,
-                    prompt=args.prompt,
-                    workdir=args.workdir,
-                )
-        return run_opencode(
-            base_url=base_url,
-            session_token=args.session_token,
-            prompt=args.prompt,
-            workdir=args.workdir,
-        )
+    launchers = build_launchers()
+    if args.subcommand in launchers:
+        return _run_launcher_command(launchers[args.subcommand], args)
     port = _pick_port(args.port)
     uvicorn.run(
-        create_app(host=args.host, port=port, workdir=args.workdir),
+        create_app(
+            host=args.host,
+            port=port,
+            workdir=args.workdir,
+        ),
         host=args.host,
         port=port,
     )
     return 0
 
 
+def _run_launcher_command(launcher: HarnessLauncher, args: argparse.Namespace) -> int:
+    session_token = args.session_token or uuid4().hex
+    server = HarnessToMcp(
+        host=args.host,
+        port=args.port,
+        workdir=args.workdir,
+        helper_harness_name=launcher.name,
+        pinned_session_id=session_token,
+    )
+    server.start()
+    runtime, process = launcher.create_process(
+        base_url_root=server.hijack_root_url,
+        session_token=session_token,
+        prompt=args.prompt or _launch_prompt_for(launcher),
+        workdir=args.workdir,
+    )
+    try:
+        while server._thread is not None and server._thread.is_alive():
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.stop()
+        if process.poll() is None:
+            process.terminate()
+        runtime.cleanup()
+    return 0
+
+
+async def _models_endpoint(_: StarletteRequest) -> JSONResponse:
+    return JSONResponse(
+        {
+            "object": "list",
+            "data": [{"id": HIJACK_MODEL_ID, "object": "model", "created": int(time.time()), "owned_by": "harness_to_mcp"}],
+        }
+    )
+
+
+async def _health_endpoint(request: StarletteRequest) -> JSONResponse:
+    state: AppState = request.app.state.harness_to_mcp
+    return JSONResponse(
+        {
+            "ok": True,
+            "helper_harness": state.helper_harness_name,
+            "launchers": sorted(state.launchers),
+            "adapters": sorted(state.adapters),
+        }
+    )
+
+
+def _make_hijack_endpoint(state: AppState, adapter: ApiAdapter):
+    async def endpoint(request: StarletteRequest):
+        session_id = adapter.session_token_from_headers(request.headers)
+        if not session_id:
+            return JSONResponse(adapter.error_body("Missing harness session token."), status_code=401)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return JSONResponse(adapter.error_body("Invalid JSON request body."), status_code=400)
+        hijack_request = adapter.parse_request(body)
+        if not adapter.request_has_tools(body):
+            payload = TurnPayload(model=hijack_request.model, text=adapter.default_text_response(body))
+            if hijack_request.stream:
+                return StreamingResponse(
+                    _iter_static_chunks(adapter.build_stream_chunks(payload)),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+                )
+            return JSONResponse(adapter.build_json_response(payload))
+        if not hijack_request.stream and hijack_request.tool_results:
+            return JSONResponse(adapter.build_json_response(TurnPayload(model=hijack_request.model, text="ok")))
+        active_request = await state.registry.on_hijack_request(
+            session_id,
+            adapter_name=adapter.name,
+            request=hijack_request,
+        )
+        if hijack_request.stream:
+            return StreamingResponse(
+                _stream_hijack_response(
+                    registry=state.registry,
+                    session_id=session_id,
+                    adapter=adapter,
+                    active_request=active_request,
+                    heartbeat_seconds=state.heartbeat_seconds,
+                ),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
+        try:
+            payload = await active_request.response_future
+        except RuntimeError as exc:
+            await state.registry.release_hijack_request(session_id, active_request)
+            return JSONResponse(adapter.error_body(str(exc)), status_code=503)
+        await state.registry.release_hijack_request(session_id, active_request)
+        return JSONResponse(adapter.build_json_response(payload))
+
+    return endpoint
+
+
 async def _stream_hijack_response(
     *,
     registry: HarnessSessionRegistry,
     session_id: str,
+    adapter: ApiAdapter,
     active_request,
     heartbeat_seconds: int,
 ):
@@ -399,12 +462,12 @@ async def _stream_hijack_response(
         while True:
             with anyio.move_on_after(heartbeat_seconds):
                 payload = await active_request.response_future
-                for chunk in build_stream_chunks(payload):
+                for chunk in adapter.build_stream_chunks(payload):
                     yield chunk
                 return
-            yield build_stream_heartbeat(active_request.model)
+            yield adapter.build_stream_heartbeat(active_request.model)
     except RuntimeError as exc:
-        for chunk in build_stream_chunks(CompletionPayload(model=active_request.model, text=str(exc))):
+        for chunk in adapter.build_stream_chunks(TurnPayload(model=active_request.model, text=str(exc))):
             yield chunk
     finally:
         await registry.release_hijack_request(session_id, active_request)
@@ -415,14 +478,12 @@ def _build_mcp_server(registry: HarnessSessionRegistry) -> Server[Any, Any]:
 
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:
-        session_id = _current_mcp_session_id(server)
-        return await registry.ensure_tools_ready(session_id, HIJACK_CONNECT_TIMEOUT_SECONDS)
+        return await registry.ensure_tools_ready(_current_mcp_session_id(server), HIJACK_CONNECT_TIMEOUT_SECONDS)
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any]):
-        session_id = _current_mcp_session_id(server)
-        output = await registry.call_tool(session_id, name, arguments)
-        return [types.TextContent(type="text", text=output)]
+        output = await registry.call_tool(_current_mcp_session_id(server), name, arguments)
+        return tool_result_to_mcp_content(output)
 
     return server
 
@@ -437,19 +498,11 @@ def _current_mcp_session_id(server: Server[Any, Any]) -> str:
     return session_id
 
 
-def _extract_bearer_token(authorization: str | None) -> str | None:
-    if not authorization:
-        return None
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        return None
-    return token
-
-
 def _iter_static_chunks(chunks: list[bytes]):
     async def generator():
         for chunk in chunks:
             yield chunk
+
     return generator()
 
 
@@ -471,16 +524,22 @@ def _is_local_host(host: str) -> bool:
     return host in {"127.0.0.1", "0.0.0.0", "::", "localhost"}
 
 
-def _hijack_server_is_ready(base_url: str) -> bool:
-    request = urllib.request.Request(
-        f"{base_url}/models",
-        method="GET",
-        headers={"accept": "application/json"},
-    )
+def _server_is_ready(base_url: str) -> bool:
+    models_url = f"{base_url.rstrip('/')}/models" if base_url.rstrip("/").endswith("/v1") else f"{base_url.rstrip('/')}/harness_to_mcp/v1/models"
+    request = urllib.request.Request(models_url, method="GET", headers={"accept": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=OPENCODE_PROBE_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=SERVER_PROBE_TIMEOUT_SECONDS) as response:
             body = json.loads(response.read().decode("utf-8"))
     except (OSError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
         return False
     data = body.get("data")
     return isinstance(data, list) and any(item.get("id") == HIJACK_MODEL_ID for item in data if isinstance(item, dict))
+
+
+_hijack_server_is_ready = _server_is_ready
+
+
+def _launch_prompt_for(launcher: HarnessLauncher) -> str:
+    from .launchers import LAUNCH_PROMPT
+
+    return LAUNCH_PROMPT

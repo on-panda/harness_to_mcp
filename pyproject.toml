@@ -31,9 +31,9 @@ classifiers = [
 keywords = ["mcp", "harness", "opencode", "openai-compatible"]
 
 [project.urls]
-Homepage = "https://github.com/DIYer22/harness_to_mcp"
-Repository = "https://github.com/DIYer22/harness_to_mcp"
-Issues = "https://github.com/DIYer22/harness_to_mcp/issues"
+Homepage = "https://github.com/on-panda/harness_to_mcp"
+Repository = "https://github.com/on-panda/harness_to_mcp"
+Issues = "https://github.com/on-panda/harness_to_mcp/issues"
 
 [project.scripts]
 harness_to_mcp = "harness_to_mcp.__main__:main"
