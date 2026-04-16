@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harness_to_mcp"
+version = "0.0.1"
+description = "harness_to_mcp"
+authors = [
+    {name = "DIYer22", email = "ylxx@live.com"},
+]
+maintainers = [
+    {name = "DIYer22", email = "ylxx@live.com"},
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.7"
+dependencies = [
+    "boxx",
+]
+classifiers = [
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+keywords = ["harness_to_mcp"]
+
+[project.urls]
+Homepage = "https://github.com/DIYer22/harness_to_mcp"
+Repository = "https://github.com/DIYer22/harness_to_mcp"
+Issues = "https://github.com/DIYer22/harness_to_mcp/issues"
+
+[tool.setuptools]
+packages = ["harness_to_mcp"]
+include-package-data = true
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=22.0",
+    "isort>=5.0",
+    "flake8>=5.0",
+    "mypy>=1.0",
+]
