@@ -1,8 +1,4 @@
-# harness_to_mcp
-
-[English README](./README.md)
-
-`harness_to_mcp` 通过劫持 LLM API 请求，把 harness 的内部 tools 暴露成一个 MCP HTTP server。
+# `harness_to_mcp`: 通过劫持 LLM API 请求，把 harness 的内部 tools 暴露成一个 MCP server。
 
 ## 它做了什么
 
@@ -14,22 +10,40 @@
 
 ## 当前支持的 harness
 
-- `opencode`，通过 OpenAI chat completions API 接入
-- `codex`，通过 OpenAI responses API 接入
-- `claude`，通过 Anthropic messages API 接入
+- `harness_to_mcp opencode`，通过 OpenAI chat completions API 接入
+- `harness_to_mcp codex`，通过 OpenAI responses API 接入
+- `harness_to_mcp claude`，通过 Anthropic messages API 接入
 
 ## 暴露的接口
+- MCP：`POST /mcp`、`POST /harness_to_mcp/mcp` (两个 MCP 路径是等价的)
+- Models：`GET /harness_to_mcp/v1/models`
+- OpenAI Chat Completions：`POST /harness_to_mcp/v1/chat/completions`
+- OpenAI Responses：`POST /harness_to_mcp/v1/responses`
+- Anthropic Messages：`POST /harness_to_mcp/v1/messages`
 
-默认端口：`9330`
+## 时序图
 
-- `POST /mcp`
-- `POST /harness_to_mcp/mcp`
-- `GET /harness_to_mcp/v1/models`
-- `POST /harness_to_mcp/v1/chat/completions`
-- `POST /harness_to_mcp/v1/responses`
-- `POST /harness_to_mcp/v1/messages`
+```mermaid
+sequenceDiagram
+    participant C as MCP Client
+    participant M as harness_to_mcp<br/>MCP Server
+    participant H as harness_to_mcp<br/>Hijack API Server
+    participant R as Harness
 
-其中两个 MCP 路径是等价的。
+    C->>M: initialize
+    M->>R: launch harness session
+    R->>H: send hijacked LLM API request
+    H-->>M: extract tool list from request
+    M-->>C: tools/list
+
+    C->>M: tools/call
+    M-->>H: resolve waiting request as tool call
+    H-->>R: return tool call payload
+    R->>R: execute internal tool
+    R->>H: send next request with tool result
+    H-->>M: match tool_call_id and deliver tool result
+    M-->>C: MCP tool response
+```
 
 ## 安装
 
@@ -40,7 +54,7 @@ pip install harness_to_mcp
 ## 启动服务
 
 ```bash
-harness_to_mcp --port 9330
+harness_to_mcp
 ```
 
 这个模式只启动 server。它会同时监听 MCP 和所有 hijack API 路径，但不会自己拉起任何 harness。
@@ -48,14 +62,10 @@ harness_to_mcp --port 9330
 ## 直接启动某个 harness
 
 ```bash
-harness_to_mcp opencode --port 9330
-harness_to_mcp codex --port 9330
-harness_to_mcp claude --port 9330
+harness_to_mcp claude/codex/opencode
 ```
 
 这些 helper 命令会各自启动一个同进程持有的 server，再拉起一个对应的 harness 实例。即使 harness 后续退出，server 进程仍然保持运行。
-
-这些 helper 命令不会覆盖你当前已有的 harness 配置。真实本地测试前，可以先把配置备份到 `/tmp/harness-configs-bak`。
 
 ## Python API
 

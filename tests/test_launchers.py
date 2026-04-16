@@ -1,10 +1,13 @@
 from harness_to_mcp.launchers import CODEX_SESSION_TOKEN_ENV, ClaudeLauncher, CodexLauncher, OpencodeLauncher
 
 
-def test_opencode_launcher_uses_temp_config_home() -> None:
+def test_opencode_launcher_uses_temp_xdg_dirs() -> None:
     runtime = OpencodeLauncher().create_runtime(base_url_root="http://127.0.0.1:9330/harness_to_mcp", session_token="token-1")
     try:
         assert runtime.env["XDG_CONFIG_HOME"]
+        assert runtime.env["XDG_DATA_HOME"]
+        assert runtime.env["XDG_CACHE_HOME"]
+        assert runtime.env["XDG_STATE_HOME"]
         assert runtime.command[:4] == ["opencode", "run", "--model", "harness_to_mcp/harness_to_mcp_hijack_api"]
     finally:
         runtime.cleanup()

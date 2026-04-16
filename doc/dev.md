@@ -18,7 +18,6 @@
 
 - current local harness configs are not modified by helper launch commands
 - use temporary config roots for `opencode`, `codex`, and `claude`
-- keep manual backups under `/tmp/harness-configs-bak` when testing against real local installs
 
 ## Debug tips
 

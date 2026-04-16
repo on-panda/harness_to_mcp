@@ -1,8 +1,4 @@
-# harness_to_mcp
-
-[中文版本说明](./README_cn.md)
-
-`harness_to_mcp` exposes harness internal tools as an MCP HTTP server by hijacking LLM API traffic.
+# `harness_to_mcp`: exposes harness internal tools as an MCP server by hijacking LLM API.
 
 ## What it does
 
@@ -14,22 +10,40 @@
 
 ## Supported harnesses
 
-- `opencode` via OpenAI chat completions
-- `codex` via OpenAI responses API
-- `claude` via Anthropic messages API
+- `harness_to_mcp opencode` via OpenAI chat completions
+- `harness_to_mcp codex` via OpenAI responses API
+- `harness_to_mcp claude` via Anthropic messages API
 
 ## Exposed endpoints
+- MCP: `POST /mcp`, `POST /harness_to_mcp/mcp` (The two MCP paths are equivalent)
+- Models: `GET /harness_to_mcp/v1/models`
+- OpenAI Chat Completions: `POST /harness_to_mcp/v1/chat/completions`
+- OpenAI Responses: `POST /harness_to_mcp/v1/responses`
+- Anthropic Messages: `POST /harness_to_mcp/v1/messages`
 
-Default port: `9330`
+## Sequence
 
-- `POST /mcp`
-- `POST /harness_to_mcp/mcp`
-- `GET /harness_to_mcp/v1/models`
-- `POST /harness_to_mcp/v1/chat/completions`
-- `POST /harness_to_mcp/v1/responses`
-- `POST /harness_to_mcp/v1/messages`
+```mermaid
+sequenceDiagram
+    participant C as MCP Client
+    participant M as harness_to_mcp<br/>MCP Server
+    participant H as harness_to_mcp<br/>Hijack API Server
+    participant R as Harness
 
-The two MCP paths are equivalent.
+    C->>M: initialize
+    M->>R: launch harness session
+    R->>H: send hijacked LLM API request
+    H-->>M: extract tool list from request
+    M-->>C: tools/list
+
+    C->>M: tools/call
+    M-->>H: resolve waiting request as tool call
+    H-->>R: return tool call payload
+    R->>R: execute internal tool
+    R->>H: send next request with tool result
+    H-->>M: match tool_call_id and deliver tool result
+    M-->>C: MCP tool response
+```
 
 ## Install
 
@@ -40,7 +54,7 @@ pip install harness_to_mcp
 ## Run the server
 
 ```bash
-harness_to_mcp --port 9330
+harness_to_mcp
 ```
 
 This mode starts only the server. It listens on MCP plus all hijack API routes, but does not launch any harness by itself.
@@ -48,14 +62,10 @@ This mode starts only the server. It listens on MCP plus all hijack API routes, 
 ## Launch a harness directly
 
 ```bash
-harness_to_mcp opencode --port 9330
-harness_to_mcp codex --port 9330
-harness_to_mcp claude --port 9330
+harness_to_mcp claude/codex/opencode
 ```
 
 Each helper command starts its own colocated server and one harness instance together. If the harness exits later, the server process keeps running.
-
-The helper commands do not overwrite your current harness configs. A backup copy can be kept at `/tmp/harness-configs-bak` before local testing.
 
 ## Python API
 

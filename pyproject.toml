@@ -5,14 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "harness_to_mcp"
 dynamic = ["version"]
-description = "Expose harness internal tools as an MCP HTTP server through an OpenAI-compatible hijack API."
+description = "Turn harness internal tools into a standard MCP server — compatible with Claude Code, Codex, OpenCode, and more."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "DIYer22", email = "ylxx@live.com" }]
 maintainers = [{ name = "DIYer22", email = "ylxx@live.com" }]
 license = { text = "MIT" }
 dependencies = [
-    "boxx",
     "mcp>=1.26.0",
     "starlette>=0.46.0",
     "uvicorn>=0.30.0",

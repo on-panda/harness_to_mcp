@@ -67,12 +67,16 @@ class OpencodeLauncher(HarnessLauncher):
     def create_runtime(self, *, base_url_root: str, session_token: str | None = None, prompt: str = LAUNCH_PROMPT) -> HarnessRuntime:
         session_token = session_token or uuid.uuid4().hex
         tempdir = tempfile.TemporaryDirectory(prefix="harness_to_mcp_opencode_")
-        config_dir = Path(tempdir.name) / "opencode"
+        temp_root = Path(tempdir.name)
+        config_dir = temp_root / "config" / "opencode"
         config_dir.mkdir(parents=True, exist_ok=True)
         config_path = config_dir / "opencode.json"
         config_path.write_text(_opencode_config(f"{base_url_root.rstrip('/')}/v1", session_token), encoding="utf-8")
         env = os.environ.copy()
-        env["XDG_CONFIG_HOME"] = tempdir.name
+        env["XDG_CONFIG_HOME"] = str(temp_root / "config")
+        env["XDG_DATA_HOME"] = str(temp_root / "data")
+        env["XDG_CACHE_HOME"] = str(temp_root / "cache")
+        env["XDG_STATE_HOME"] = str(temp_root / "state")
         return HarnessRuntime(
             session_token=session_token,
             tempdir=tempdir,
