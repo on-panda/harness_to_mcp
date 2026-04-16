@@ -1,45 +1,53 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "harness_to_mcp"
-version = "0.0.1"
-description = "harness_to_mcp"
-authors = [
-    {name = "DIYer22", email = "ylxx@live.com"},
-]
-maintainers = [
-    {name = "DIYer22", email = "ylxx@live.com"},
-]
-license = {text = "MIT"}
+dynamic = ["version"]
+description = "Expose harness internal tools as an MCP HTTP server through an OpenAI-compatible hijack API."
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.10"
+authors = [{ name = "DIYer22", email = "ylxx@live.com" }]
+maintainers = [{ name = "DIYer22", email = "ylxx@live.com" }]
+license = { text = "MIT" }
 dependencies = [
     "boxx",
+    "mcp>=1.26.0",
+    "starlette>=0.46.0",
+    "uvicorn>=0.30.0",
 ]
 classifiers = [
-    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-keywords = ["harness_to_mcp"]
+keywords = ["mcp", "harness", "opencode", "openai-compatible"]
 
 [project.urls]
 Homepage = "https://github.com/DIYer22/harness_to_mcp"
 Repository = "https://github.com/DIYer22/harness_to_mcp"
 Issues = "https://github.com/DIYer22/harness_to_mcp/issues"
 
-[tool.setuptools]
-packages = ["harness_to_mcp"]
-include-package-data = true
+[project.scripts]
+harness_to_mcp = "harness_to_mcp.__main__:main"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-    "black>=22.0",
-    "isort>=5.0",
-    "flake8>=5.0",
-    "mypy>=1.0",
+    "pytest>=8.0.0",
 ]
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = ["harness_to_mcp*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "harness_to_mcp.__info__.__version__" }
