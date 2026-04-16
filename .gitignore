@@ -1,0 +1,53 @@
+﻿# Customized
+tmp_*
+
+# ignore
+*.zip
+.vscode
+*.pyc
+__pycache__/
+
+# MacOS
+.DS_Store
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# Type checking
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDEs
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment variables
+.env
+
+# coverage report
+test-results/
+htmlcov/
+.coverage
+
+# sphinx
+/docs/api
+/docs/_build
