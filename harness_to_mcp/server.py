@@ -56,6 +56,15 @@ MODELS_PATH = "/harness_to_mcp/v1/models"
 HEALTH_PATH = "/harness_to_mcp/health"
 
 
+def _enable_default_logging() -> None:
+    package_logger = logging.getLogger("harness_to_mcp")
+    if package_logger.level == logging.NOTSET:
+        package_logger.setLevel(logging.INFO)
+    if logging.getLogger().handlers:
+        return
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
 class MCPAcceptCompatibilityMiddleware:
     def __init__(self, app, paths: tuple[str, ...] = MCP_PATHS) -> None:
         self.app = app
@@ -215,6 +224,7 @@ class HarnessToMcp:
     def start(self) -> None:
         if self._thread is not None:
             return
+        _enable_default_logging()
         app = create_app(
             host=self.host,
             port=self.port,
@@ -337,6 +347,7 @@ def create_app(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _enable_default_logging()
     parser = build_argument_parser()
     args = parser.parse_args(argv)
     launchers = build_launchers()

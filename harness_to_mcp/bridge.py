@@ -100,7 +100,10 @@ class HarnessSessionBridge:
             active_request.response_future.set_result(response)
             self.active_request = None
             self._active_request_ready = anyio.Event()
-        return await result_future
+        logger.info("Dispatching tool call %s (%s) for session %s", call_id, name, self.session_id)
+        output = await result_future
+        logger.info("Tool call %s succeeded for session %s", call_id, self.session_id)
+        return output
 
     async def on_hijack_request(self, *, adapter_name: str, request: HijackRequest) -> ActiveHijackRequest:
         loop = asyncio.get_running_loop()
@@ -114,6 +117,8 @@ class HarnessSessionBridge:
             inferred = launcher_for_adapter(self.launchers, adapter_name)
             if inferred is not None:
                 self.launcher_name = inferred
+            if self.last_harness_activity_at == 0.0:
+                logger.info("Harness connected for session %s via %s", self.session_id, adapter_name)
             self.last_harness_activity_at = time.monotonic()
             for tool_result in request.tool_results:
                 result_future = self.pending_tool_results.pop(tool_result.tool_call_id, None)
@@ -130,6 +135,7 @@ class HarnessSessionBridge:
     async def release_hijack_request(self, active_request: ActiveHijackRequest) -> None:
         async with self.lock:
             if self.active_request is active_request:
+                logger.info("Harness disconnected for session %s", self.session_id)
                 self._clear_active_request_locked(RuntimeError("Hijack API request closed."))
 
     async def _ensure_active_request(self, timeout_seconds: float) -> ActiveHijackRequest:
