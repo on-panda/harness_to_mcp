@@ -46,5 +46,5 @@ def test_build_config_embeds_provider_and_token() -> None:
 
 def test_build_run_command_uses_bootstrap_prompt() -> None:
     command = build_run_command()
-    assert command[:4] == ["opencode", "run", "--model", "harness_to_mcp/harness_to_mcp_hijack_api"]
+    assert command[:5] == ["opencode", "run", "--dangerously-skip-permissions", "--model", "harness_to_mcp/harness_to_mcp_hijack_api"]
     assert command[-1] == LAUNCH_PROMPT

@@ -22,7 +22,7 @@ def test_opencode_launcher_uses_temp_xdg_dirs() -> None:
         assert runtime.env["XDG_DATA_HOME"]
         assert runtime.env["XDG_CACHE_HOME"]
         assert runtime.env["XDG_STATE_HOME"]
-        assert runtime.command[:4] == ["opencode", "run", "--model", "harness_to_mcp/harness_to_mcp_hijack_api"]
+        assert runtime.command[:5] == ["opencode", "run", "--dangerously-skip-permissions", "--model", "harness_to_mcp/harness_to_mcp_hijack_api"]
     finally:
         runtime.cleanup()
 
@@ -33,6 +33,7 @@ def test_codex_launcher_uses_temp_home_and_responses_provider() -> None:
         assert runtime.env[CODEX_SESSION_TOKEN_ENV] == "token-1"
         assert runtime.env["HOME"]
         joined = " ".join(runtime.command)
+        assert "--dangerously-bypass-approvals-and-sandbox" in joined
         assert "wire_api=\"responses\"" in joined
         assert "http://127.0.0.1:9330/harness_to_mcp/v1" in joined
     finally:
@@ -46,6 +47,8 @@ def test_claude_launcher_uses_temp_config_dir() -> None:
         assert runtime.env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:9330/harness_to_mcp"
         assert runtime.env["ANTHROPIC_API_KEY"] == "token-1"
         assert runtime.command[0] == "claude"
+        assert "--dangerously-skip-permissions" in runtime.command
+        assert runtime.command[runtime.command.index("--permission-mode") + 1] == "bypassPermissions"
     finally:
         runtime.cleanup()
 

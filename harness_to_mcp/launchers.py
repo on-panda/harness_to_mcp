@@ -92,7 +92,16 @@ class OpencodeLauncher(HarnessLauncher):
             session_token=session_token,
             tempdir=tempdir,
             env=env,
-            command=["opencode", "run", "--model", f"{HIJACK_PROVIDER_ID}/{HIJACK_MODEL_ID}", "--format", "json", prompt],
+            command=[
+                "opencode",
+                "run",
+                "--dangerously-skip-permissions",
+                "--model",
+                f"{HIJACK_PROVIDER_ID}/{HIJACK_MODEL_ID}",
+                "--format",
+                "json",
+                prompt,
+            ],
             log_path=config_dir / "opencode.log",
         )
 

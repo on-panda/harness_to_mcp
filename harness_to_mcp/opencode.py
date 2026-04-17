@@ -16,7 +16,16 @@ def build_config(*, base_url: str, session_token: str) -> str:
 def build_run_command(*, prompt: str = LAUNCH_PROMPT, json_format: bool = True) -> list[str]:
     if not json_format:
         raise ValueError("opencode runtime always uses JSON format")
-    return ["opencode", "run", "--model", f"{HIJACK_PROVIDER_ID}/{HIJACK_MODEL_ID}", "--format", "json", prompt]
+    return [
+        "opencode",
+        "run",
+        "--dangerously-skip-permissions",
+        "--model",
+        f"{HIJACK_PROVIDER_ID}/{HIJACK_MODEL_ID}",
+        "--format",
+        "json",
+        prompt,
+    ]
 
 
 def run_opencode(*, base_url: str, session_token: str | None = None, prompt: str = LAUNCH_PROMPT, workdir: str | None = None, json_format: bool = True) -> int:
