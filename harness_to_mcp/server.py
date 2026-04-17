@@ -11,7 +11,6 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from http import HTTPStatus
 from typing import Any, Sequence
 from uuid import uuid4
 
@@ -21,13 +20,8 @@ from mcp import types
 from mcp.server.fastmcp.server import StreamableHTTPASGIApp
 from mcp.server.lowlevel import Server
 from mcp.server.streamable_http import (
-    CONTENT_TYPE_JSON,
-    ErrorData,
-    INVALID_REQUEST,
-    JSONRPCError,
     MCP_SESSION_ID_HEADER,
     Request,
-    Response,
     Scope,
     StreamableHTTPServerTransport,
 )
@@ -116,58 +110,52 @@ class HarnessSessionManager(StreamableHTTPSessionManager):
     async def _handle_stateful_request(self, scope: Scope, receive, send) -> None:
         request = Request(scope, receive)
         request_mcp_session_id = request.headers.get(MCP_SESSION_ID_HEADER)
+        transport = self._server_instances.get(request_mcp_session_id) if request_mcp_session_id is not None else None
+        if transport is None:
+            transport = await self._start_transport(request_mcp_session_id)
+        await transport.handle_request(scope, receive, send)
 
-        if request_mcp_session_id is not None and request_mcp_session_id in self._server_instances:
-            transport = self._server_instances[request_mcp_session_id]
-            await transport.handle_request(scope, receive, send)
-            return
+    async def _start_transport(self, requested_session_id: str | None) -> HarnessTransport:
+        async with self._session_creation_lock:
+            restored_session = requested_session_id is not None
+            if requested_session_id is not None:
+                existing = self._server_instances.get(requested_session_id)
+                if existing is not None:
+                    return existing
+                session_id = requested_session_id
+            else:
+                session_id = self.pinned_session_id or uuid4().hex
+                if session_id in self._server_instances:
+                    session_id = uuid4().hex
 
-        if request_mcp_session_id is None:
-            async with self._session_creation_lock:
-                new_session_id = self.pinned_session_id or uuid4().hex
-                if new_session_id in self._server_instances:
-                    new_session_id = uuid4().hex
-                transport = HarnessTransport(
-                    session_id=new_session_id,
-                    registry=self.registry,
-                    is_json_response_enabled=self.json_response,
-                    event_store=self.event_store,
-                    security_settings=self.security_settings,
-                    retry_interval=self.retry_interval,
-                )
-                self._server_instances[new_session_id] = transport
+            transport = HarnessTransport(
+                session_id=session_id,
+                registry=self.registry,
+                is_json_response_enabled=self.json_response,
+                event_store=self.event_store,
+                security_settings=self.security_settings,
+                retry_interval=self.retry_interval,
+            )
+            self._server_instances[session_id] = transport
 
-                async def run_server(*, task_status=anyio.TASK_STATUS_IGNORED) -> None:
-                    async with transport.connect() as streams:
-                        read_stream, write_stream = streams
-                        task_status.started()
-                        try:
-                            await self.app.run(
-                                read_stream,
-                                write_stream,
-                                self.app.create_initialization_options(),
-                                stateless=False,
-                            )
-                        finally:
-                            self._server_instances.pop(new_session_id, None)
-                            await self.registry.close_session(new_session_id)
+            async def run_server(*, task_status=anyio.TASK_STATUS_IGNORED) -> None:
+                async with transport.connect() as streams:
+                    read_stream, write_stream = streams
+                    task_status.started()
+                    try:
+                        await self.app.run(
+                            read_stream,
+                            write_stream,
+                            self.app.create_initialization_options(),
+                            stateless=restored_session,
+                        )
+                    finally:
+                        self._server_instances.pop(session_id, None)
+                        await self.registry.close_session(session_id)
 
-                assert self._task_group is not None
-                await self._task_group.start(run_server)
-                await transport.handle_request(scope, receive, send)
-                return
-
-        error_response = JSONRPCError(
-            jsonrpc="2.0",
-            id="server-error",
-            error=ErrorData(code=INVALID_REQUEST, message="Session not found"),
-        )
-        response = Response(
-            content=error_response.model_dump_json(by_alias=True, exclude_none=True),
-            status_code=HTTPStatus.NOT_FOUND,
-            media_type=CONTENT_TYPE_JSON,
-        )
-        await response(scope, receive, send)
+            assert self._task_group is not None
+            await self._task_group.start(run_server)
+            return transport
 
 
 @dataclass(slots=True)
