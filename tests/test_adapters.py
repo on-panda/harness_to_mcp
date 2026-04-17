@@ -99,6 +99,15 @@ def test_tool_result_to_mcp_content_parses_json_string_image_blocks() -> None:
     assert result[0].mimeType == "image/png"
 
 
+def test_tool_result_to_mcp_content_parses_codex_input_image_blocks() -> None:
+    content = '[{"type":"input_image","image_url":"data:image/png;base64,aGVsbG8="}]'
+    result = tool_result_to_mcp_content(content)
+    assert len(result) == 1
+    assert result[0].type == "image"
+    assert result[0].mimeType == "image/png"
+    assert result[0].data == "aGVsbG8="
+
+
 def test_truncate_long_text_keeps_prefix_and_suffix() -> None:
     text = "a" * (MAX_TEXT_LENGTH + 20)
     truncated = truncate_long_text(text)

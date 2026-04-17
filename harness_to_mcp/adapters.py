@@ -767,6 +767,12 @@ def _convert_content_item(item: Any) -> types.TextContent | types.ImageContent |
             mime_type = source.get("media_type") or source.get("mimeType")
             if isinstance(mime_type, str):
                 return types.ImageContent(type="image", mimeType=mime_type, data=source["data"])
+    if item_type == "input_image" and isinstance(item.get("image_url"), str):
+        header, sep, data = item["image_url"].partition(",")
+        if sep and header.startswith("data:") and header.endswith(";base64"):
+            mime_type = header[5:-7]
+            if mime_type:
+                return types.ImageContent(type="image", mimeType=mime_type, data=data)
     return None
 
 
