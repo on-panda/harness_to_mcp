@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9330
-DEFAULT_HEARTBEAT_SECONDS = 600
+DEFAULT_HEARTBEAT_SECONDS = 50
 SERVER_PROBE_TIMEOUT_SECONDS = 1.5
 CORS_EXPOSE_HEADERS = ["mcp-session-id", "mcp-protocol-version"]
 MCP_PATHS = ("/mcp", "/harness_to_mcp/mcp")

@@ -1,24 +1,25 @@
-# `harness_to_mcp`：通过劫持 LLM API，把 harness 的内部 tools 暴露成一个标准 MCP server
+# `harness_to_mcp`：将 harness 的内部 tools 暴露成标准 MCP server
 
-### 目录：[特性](#-特性) | [安装](#-安装) | [示例](#-示例) | [工作原理](#-工作原理) | [Python API](#-python-api) | [说明](#-说明)
+### 目录：[特性](#-特性) | [安装](#-安装) | [示例](#-示例) | [工作原理](#-工作原理) | [说明](#-说明)
 
-把任意 agent harness（Claude Code、Codex、OpenCode、OpenClaw……）变成一个普通的 MCP server —— 做法是：横在 harness 和它的 LLM 后端之间，从被劫持的请求里偷到 tool 列表，再把 MCP 的 `tools/call` 转发回 harness 的 tool loop。
+支持把任意 agent harness（Claude Code、Codex、OpenClaw、OpenCode……）转化成 MCP server
+
+做法：`harness_to_mcp` 横在 harness 和它的 LLM API 之间，从被劫持的请求里拿到 tool 列表，再把 MCP 的 `tools/call` 转发回 harness 的 tool loop。
 
 ## ▮ 特性
 
-- ☑ 一条命令就能把 `claude` / `codex` / `opencode` / `openclaw` 暴露为 MCP server
+- ☑ 一条命令就能把 `claude` / `codex` / `openclaw` / `opencode` 暴露为 MCP server
 - ☑ 同一个端口上同时跑 **一个 MCP HTTP server** 和 **一个劫持 LLM API server**
 - ☑ 自动从被拦截的 LLM 请求里提取 harness 的 tool 列表
 - ☑ 把 MCP `tools/call` 转发进 harness 的 tool loop，再把 tool result 映射回 MCP
 - ☑ 兼容的 LLM API 协议：
-    - OpenAI Chat Completions（`opencode`、`openclaw`）
+    - OpenAI Chat Completions（`openclaw`、`opencode`）
     - OpenAI Responses（`codex`）
     - Anthropic Messages（`claude`）
 - ☑ 使用隔离的 harness config —— **不会**污染用户自己的 config 和 log
-- ☑ 每个 MCP session 对应一个 harness 进程，session 关闭时自动终止
-- ☑ 提供纯 server 模式，便于接入第三方 harness
-- ☑ 被拦截的请求用心跳保活，MCP 在决定下一次 tool call 期间永不超时
-- ☑ 纯 Python 实现，没有复杂打包 —— 方便 hack 和调试
+- ☑ 每个 MCP session 对应一个 harness 进程，session 关闭时自动终止 harness 进程
+- ☑ 提供纯 server 模式，用于接入任意 harness
+- ☑ 纯 Python 实现，依赖干净 —— 方便 hack 和 vibe coding
 
 ## ▮ 安装
 
@@ -26,18 +27,18 @@
 pip install harness_to_mcp
 ```
 
-需要 Python ≥ 3.10。对应的 harness CLI（`claude`、`codex`、`opencode`……）需要自行安装并放到 `PATH` 里。
+对应的 harness CLI（`claude`、`codex`、`openclaw`……）需要自行安装并放到 `PATH` 里。
 
 ## ▮ 示例
 
-#### 1. 把某个 harness 暴露为 MCP（一行命令）
+#### 1. 一行命令把 harness 暴露为 MCP
 
 ```bash
 harness_to_mcp claude
-# 或: harness_to_mcp codex / opencode / openclaw
+# 或: harness_to_mcp codex / openclaw / opencode
 ```
 
-这些 helper 命令会各自启动一个同进程的 server，并拉起一个对应的 harness 实例。harness 会使用隔离的 config 启动，不会污染用户自己的 config 和 log。
+这些命令会启动一个 server，并拉起一个对应的 harness 实例。harness 会使用隔离的 config 启动，不会污染用户自己的 config 和 log。
 
 启动完成后，MCP 接口就在：
 
@@ -47,13 +48,13 @@ http://127.0.0.1:<port>/mcp
 
 把任意 MCP 客户端（Claude Desktop、Cursor、自写脚本……）指过去，该 harness 的内部 tools 就会作为标准 MCP tools 出现。
 
-#### 2. 只启动中转服务（接入第三方 harness）
+#### 2. 只启动中转服务（可接入任意 harness）
 
 ```bash
 harness_to_mcp
 ```
 
-这个模式**只**启动 server。它会同时监听 MCP 和所有 hijack API 路径，但不会自己拉起任何 harness。把第三方 harness 的 LLM API 指向 hijack API，发一条消息，它的内部 tools 就会被暴露出来。
+这个模式**只**启动 server。它会同时监听 MCP 和所有 hijack LLM API 路径，但不会自己拉起任何 harness。配置需要被 hack 的 harness 的 LLM API 以指向 hijack API，并发一条请求，它的内部 tools 就会被暴露出来。这个方案也可以用来接入带自定义配置的 `claude`、`codex`、`openclaw`、`opencode`……
 
 暴露的接口：
 
@@ -65,6 +66,8 @@ harness_to_mcp
 | Anthropic Messages      | `POST /harness_to_mcp/v1/messages`                           |
 
 #### 3. Python API
+
+我们同时提供 Python 接口
 
 ```python
 from harness_to_mcp import HarnessToMcp
@@ -110,12 +113,10 @@ sequenceDiagram
 - LLM API 层拆成了可复用 adapter：`chat completions`、`responses`、`messages`。
 - harness 启动层按 harness 拆分：`opencode`、`openclaw`、`codex`、`claude`。
 - 纯 server 模式（不带子命令的 `harness_to_mcp`）不会自动拉起 harness。
-- 被拦截后处于等待状态的请求，会通过周期性 heartbeat 保活，直到 MCP 决定下一次 tool call。
-- 如果 harness 在 30 秒内没有重新连回 hijack API，MCP 请求会收到 `hijack-not-connected` 错误。
+- 被拦截后处于等待状态的请求，会通过周期性 heartbeat 保活，直到 MCP 收到下一次 tool call。
 
-&nbsp;  
-&nbsp;
 
-**欢迎 [提 issue](https://github.com/on-panda/harness_to_mcp/issues) 和 PR** 😊
+## ▮ 开源协议
 
-[English README](./README.md)
+[The MIT License](https://en.wikipedia.org/wiki/MIT_License)
+
