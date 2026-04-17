@@ -59,7 +59,7 @@ def test_explicit_mcp_session_id_is_restored_after_server_restart() -> None:
     assert body["result"]["serverInfo"]["name"] == "harness_to_mcp"
 
 
-def test_restored_mcp_session_accepts_non_initialize_request() -> None:
+def test_restored_mcp_session_accepts_non_initialize_request(caplog) -> None:
     initialize_payload = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -80,30 +80,36 @@ def test_restored_mcp_session_accepts_non_initialize_request() -> None:
         return []
 
     app.state.harness_to_mcp.registry.ensure_tools_ready = fake_ensure_tools_ready
-    with TestClient(app) as restarted_client:
-        response = restarted_client.post(
-            "/mcp",
-            headers={"mcp-session-id": session_id},
-            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-        )
+    with caplog.at_level(logging.INFO, logger="harness_to_mcp.server"):
+        with TestClient(app) as restarted_client:
+            response = restarted_client.post(
+                "/mcp",
+                headers={"mcp-session-id": session_id},
+                json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            )
     assert response.status_code == 200
     assert response.json()["result"]["tools"] == []
+    assert "Restored MCP session in resume mode" in caplog.text
 
 
 def test_default_logging_is_enabled_for_package_logger() -> None:
     package_logger = logging.getLogger("harness_to_mcp")
+    mcp_request_logger = logging.getLogger("mcp.server.lowlevel.server")
     root_logger = logging.getLogger()
     original_root_handlers = root_logger.handlers[:]
     original_root_level = root_logger.level
     original_handlers = package_logger.handlers[:]
     original_level = package_logger.level
     original_propagate = package_logger.propagate
+    original_mcp_request_level = mcp_request_logger.level
     try:
         root_logger.handlers.clear()
         package_logger.setLevel(logging.NOTSET)
         package_logger.propagate = True
+        mcp_request_logger.setLevel(logging.NOTSET)
         _enable_default_logging()
         assert package_logger.level == logging.INFO
+        assert mcp_request_logger.level == logging.WARNING
         assert root_logger.handlers
     finally:
         for handler in root_logger.handlers:
@@ -115,3 +121,4 @@ def test_default_logging_is_enabled_for_package_logger() -> None:
         package_logger.handlers.extend(original_handlers)
         package_logger.setLevel(original_level)
         package_logger.propagate = original_propagate
+        mcp_request_logger.setLevel(original_mcp_request_level)

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 HIJACK_CONNECT_TIMEOUT_SECONDS = 30
 ACTIVE_REQUEST_GRACE_SECONDS = 2
 INITIAL_EXTERNAL_HARNESS_WAIT_SECONDS = 2
-TOOL_CALL_BATCH_WINDOW_SECONDS = 0.001
+TOOL_CALL_BATCH_WINDOW_SECONDS = 0.004
 
 
 @dataclass(slots=True)
@@ -106,7 +106,7 @@ class HarnessSessionBridge:
             if self.tool_call_batch_task is None or self.tool_call_batch_task.done():
                 self.tool_call_batch_task = asyncio.create_task(self._dispatch_tool_call_batches())
         output = await result_future
-        logger.info("Tool call %s succeeded for session %s", call_id, self.session_id)
+        logger.info("Tool call %s succeeded", name)
         return output
 
     async def on_hijack_request(self, *, adapter_name: str, request: HijackRequest) -> ActiveHijackRequest:
@@ -122,7 +122,7 @@ class HarnessSessionBridge:
             if inferred is not None:
                 self.launcher_name = inferred
             if self.last_harness_activity_at == 0.0:
-                logger.info("Harness connected for session %s via %s", self.session_id, adapter_name)
+                logger.info("Harness connected via %s", adapter_name)
             self.last_harness_activity_at = time.monotonic()
             for tool_result in request.tool_results:
                 self.inflight_tool_call_ids.discard(tool_result.tool_call_id)
@@ -140,7 +140,7 @@ class HarnessSessionBridge:
     async def release_hijack_request(self, active_request: ActiveHijackRequest) -> None:
         async with self.lock:
             if self.active_request is active_request:
-                logger.info("Harness disconnected for session %s", self.session_id)
+                logger.info("Harness disconnected")
                 self._clear_active_request_locked(RuntimeError("Hijack API request closed."))
 
     async def _ensure_active_request(self, timeout_seconds: float) -> ActiveHijackRequest:
@@ -208,7 +208,7 @@ class HarnessSessionBridge:
             prompt=LAUNCH_PROMPT,
             workdir=self.workdir,
         )
-        logger.info("Started %s harness for session %s with pid %s", launcher.name, self.session_id, self.process.pid)
+        logger.info("Started %s harness (pid %s)", launcher.name, self.process.pid)
 
     async def _stop_harness_locked(self) -> None:
         process = self.process
@@ -218,7 +218,7 @@ class HarnessSessionBridge:
         if process is not None and process.poll() is None:
             process.terminate()
             await anyio.to_thread.run_sync(self._wait_or_kill_process, process)
-            logger.info("Stopped harness for session %s", self.session_id)
+            logger.info("Stopped harness")
         if runtime is not None:
             runtime.cleanup()
 
@@ -263,12 +263,11 @@ class HarnessSessionBridge:
                             self._active_request_ready = anyio.Event()
                     if batch:
                         if len(batch) == 1:
-                            logger.info("Dispatching tool call %s (%s) for session %s", batch[0].call_id, batch[0].name, self.session_id)
+                            logger.info("Dispatching tool call %s", batch[0].name)
                         else:
                             logger.info(
-                                "Dispatching %s tool calls for session %s: %s",
+                                "Dispatching %s tool calls: %s",
                                 len(batch),
-                                self.session_id,
                                 ", ".join(tool_call.name for tool_call in batch),
                             )
                         break

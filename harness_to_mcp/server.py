@@ -52,8 +52,11 @@ HEALTH_PATH = "/harness_to_mcp/health"
 
 def _enable_default_logging() -> None:
     package_logger = logging.getLogger("harness_to_mcp")
+    mcp_request_logger = logging.getLogger("mcp.server.lowlevel.server")
     if package_logger.level == logging.NOTSET:
         package_logger.setLevel(logging.INFO)
+    if mcp_request_logger.level == logging.NOTSET:
+        mcp_request_logger.setLevel(logging.WARNING)
     if logging.getLogger().handlers:
         return
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -123,6 +126,7 @@ class HarnessSessionManager(StreamableHTTPSessionManager):
                 if existing is not None:
                     return existing
                 session_id = requested_session_id
+                logger.info("Restored MCP session in resume mode")
             else:
                 session_id = self.pinned_session_id or uuid4().hex
                 if session_id in self._server_instances:

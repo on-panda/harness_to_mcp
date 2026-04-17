@@ -142,8 +142,8 @@ def test_bridge_logs_tool_call_dispatch_and_success(caplog) -> None:
             await session.close()
 
     asyncio.run(run())
-    assert "Dispatching tool call callabc123 (read) for session session-1" in caplog.text
-    assert "Tool call callabc123 succeeded for session session-1" in caplog.text
+    assert "Dispatching tool call read" in caplog.text
+    assert "Tool call read succeeded" in caplog.text
 
 
 def test_bridge_logs_harness_disconnect(caplog) -> None:
@@ -170,7 +170,7 @@ def test_bridge_logs_harness_disconnect(caplog) -> None:
         await session.close()
 
     asyncio.run(run())
-    assert "Harness disconnected for session session-1" in caplog.text
+    assert "Harness disconnected" in caplog.text
 
 
 def test_bridge_logs_harness_connect(caplog) -> None:
@@ -196,4 +196,4 @@ def test_bridge_logs_harness_connect(caplog) -> None:
                     await active_request.response_future
 
     asyncio.run(run())
-    assert "Harness connected for session session-1 via openai_chat" in caplog.text
+    assert "Harness connected via openai_chat" in caplog.text
