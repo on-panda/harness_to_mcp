@@ -18,6 +18,7 @@
 
 - current local harness configs are not modified by helper launch commands
 - use temporary config roots for `opencode`, `openclaw`, `codex`, and `claude`
+- `openclaw` helper mode uses one shared isolated gateway sidecar per `harness_to_mcp openclaw` process, not one gateway per MCP session
 
 ## Debug tips
 

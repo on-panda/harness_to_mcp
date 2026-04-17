@@ -2,7 +2,7 @@
 
 ## What it does
 
-- starts one MCP HTTP server and one hijack API server on the same port
+- starts one MCP HTTP server and one hijack LLM API server on the same port
 - starts one harness process per MCP session
 - extracts the harness tool list from intercepted LLM requests
 - forwards MCP `tools/call` into the harness tool loop and maps the tool result back to MCP
@@ -10,14 +10,12 @@
 
 ## Supported harnesses
 
-- `harness_to_mcp opencode` via OpenAI chat completions
-- `harness_to_mcp openclaw` via OpenAI chat completions
+- `harness_to_mcp openclaw/opencode` via OpenAI chat completions
 - `harness_to_mcp codex` via OpenAI responses API
 - `harness_to_mcp claude` via Anthropic messages API
 
 ## Exposed endpoints
 - MCP: `POST /mcp`, `POST /harness_to_mcp/mcp` (The two MCP paths are equivalent)
-- Models: `GET /harness_to_mcp/v1/models`
 - OpenAI Chat Completions: `POST /harness_to_mcp/v1/chat/completions`
 - OpenAI Responses: `POST /harness_to_mcp/v1/responses`
 - Anthropic Messages: `POST /harness_to_mcp/v1/messages`
@@ -52,21 +50,21 @@ sequenceDiagram
 pip install harness_to_mcp
 ```
 
-## Run the server
-
-```bash
-harness_to_mcp
-```
-
-This mode starts only the server. It listens on MCP plus all hijack API routes, but does not launch any harness by itself.
-
 ## Launch a harness directly
 
 ```bash
 harness_to_mcp claude/codex/opencode/openclaw
 ```
 
-Each helper command starts its own colocated server and one harness instance together. If the harness exits later, the server process keeps running.
+Each helper command starts its own colocated server and one harness instance together. The harness will be started using an isolated config and will not pollute the user's own config and logs.
+
+## Only run the server
+
+```bash
+harness_to_mcp
+```
+
+This mode starts only the server. It listens on MCP plus all hijack API routes, but does not launch any harness by itself. Users need to configure the hijack API for the harness and start a request to expose its internal tools.
 
 ## Python API
 
@@ -76,7 +74,6 @@ from harness_to_mcp import HarnessToMcp
 with HarnessToMcp(port=9330) as server:
     print(server.mcp_url)
     print(server.hijack_base_url)
-    print(server.anthropic_base_url)
 ```
 
 ## Notes

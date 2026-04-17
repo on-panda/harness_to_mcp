@@ -180,6 +180,7 @@ class HarnessToMcp:
         heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS,
         helper_harness_name: str | None = None,
         pinned_session_id: str | None = None,
+        launchers: dict[str, HarnessLauncher] | None = None,
     ) -> None:
         self.host = host
         self.port = _pick_port(port)
@@ -187,6 +188,7 @@ class HarnessToMcp:
         self.heartbeat_seconds = heartbeat_seconds
         self.helper_harness_name = helper_harness_name
         self.pinned_session_id = pinned_session_id
+        self.launchers = launchers
         self._thread: threading.Thread | None = None
         self._server: uvicorn.Server | None = None
 
@@ -220,6 +222,7 @@ class HarnessToMcp:
             heartbeat_seconds=self.heartbeat_seconds,
             helper_harness_name=self.helper_harness_name,
             pinned_session_id=self.pinned_session_id,
+            launchers=self.launchers,
         )
         config = uvicorn.Config(app, host=self.host, port=self.port, log_level="info")
         server = uvicorn.Server(config)
@@ -274,10 +277,11 @@ def create_app(
     heartbeat_seconds: int = DEFAULT_HEARTBEAT_SECONDS,
     helper_harness_name: str | None = None,
     pinned_session_id: str | None = None,
+    launchers: dict[str, HarnessLauncher] | None = None,
 ) -> Starlette:
     connect_host = _connect_host(host)
     base_url_root = f"http://{connect_host}:{port}/harness_to_mcp"
-    launchers = build_launchers()
+    launchers = launchers or build_launchers()
     if helper_harness_name is not None and helper_harness_name not in launchers:
         raise ValueError(f"Unknown helper harness: {helper_harness_name}")
     adapters = build_adapters()
@@ -337,7 +341,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     launchers = build_launchers()
     if args.subcommand in launchers:
-        return _run_launcher_command(launchers[args.subcommand], args)
+        return _run_launcher_command(launchers[args.subcommand], args, launchers)
     port = _pick_port(args.port)
     uvicorn.run(
         create_app(
@@ -351,7 +355,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _run_launcher_command(launcher: HarnessLauncher, args: argparse.Namespace) -> int:
+def _run_launcher_command(launcher: HarnessLauncher, args: argparse.Namespace, launchers: dict[str, HarnessLauncher] | None = None) -> int:
     session_token = args.session_token or uuid4().hex
     server = HarnessToMcp(
         host=args.host,
@@ -359,6 +363,7 @@ def _run_launcher_command(launcher: HarnessLauncher, args: argparse.Namespace) -
         workdir=args.workdir,
         helper_harness_name=launcher.name,
         pinned_session_id=session_token,
+        launchers=launchers,
     )
     server.start()
     runtime, process = launcher.create_process(
@@ -377,6 +382,7 @@ def _run_launcher_command(launcher: HarnessLauncher, args: argparse.Namespace) -
         if process.poll() is None:
             process.terminate()
         runtime.cleanup()
+        launcher.shutdown()
     return 0
 
 

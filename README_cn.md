@@ -2,7 +2,7 @@
 
 ## 它做了什么
 
-- 在同一个端口上启动一个 MCP HTTP server 和一个 hijack API server
+- 在同一个端口上启动一个 MCP HTTP server 和一个劫持的 LLM API server
 - 每个 MCP session 对应启动一个 harness 进程
 - 从被拦截的 LLM 请求里提取 harness 的 tool 列表
 - 把 MCP `tools/call` 转发进 harness 的 tool loop，并把 tool result 再映射回 MCP
@@ -10,14 +10,12 @@
 
 ## 当前支持的 harness
 
-- `harness_to_mcp opencode`，通过 OpenAI chat completions API 接入
-- `harness_to_mcp openclaw`，通过 OpenAI chat completions API 接入
+- `harness_to_mcp openclaw/opencode`，通过 OpenAI chat completions API 接入
 - `harness_to_mcp codex`，通过 OpenAI responses API 接入
 - `harness_to_mcp claude`，通过 Anthropic messages API 接入
 
 ## 暴露的接口
 - MCP：`POST /mcp`、`POST /harness_to_mcp/mcp` (两个 MCP 路径是等价的)
-- Models：`GET /harness_to_mcp/v1/models`
 - OpenAI Chat Completions：`POST /harness_to_mcp/v1/chat/completions`
 - OpenAI Responses：`POST /harness_to_mcp/v1/responses`
 - Anthropic Messages：`POST /harness_to_mcp/v1/messages`
@@ -52,21 +50,21 @@ sequenceDiagram
 pip install harness_to_mcp
 ```
 
-## 启动服务
-
-```bash
-harness_to_mcp
-```
-
-这个模式只启动 server。它会同时监听 MCP 和所有 hijack API 路径，但不会自己拉起任何 harness。
-
 ## 直接启动某个 harness
 
 ```bash
 harness_to_mcp claude/codex/opencode/openclaw
 ```
 
-这些 helper 命令会各自启动一个同进程持有的 server，再拉起一个对应的 harness 实例。即使 harness 后续退出，server 进程仍然保持运行。
+这些 helper 命令会各自启动一个同进程持有的 server，再拉起一个对应的 harness 实例。harness 会使用隔离的 config 启动，不会污染用户自己的 config 和 log。
+
+## 只启动中转服务
+
+```bash
+harness_to_mcp
+```
+
+这个模式只启动 server。它会同时监听 MCP 和所有 hijack API 路径，但不会自己拉起任何 harness。用户需要给第三方 harness 配置 hijack API 并发一条消息，来暴露其内部 tools。
 
 ## Python API
 
@@ -76,7 +74,6 @@ from harness_to_mcp import HarnessToMcp
 with HarnessToMcp(port=9330) as server:
     print(server.mcp_url)
     print(server.hijack_base_url)
-    print(server.anthropic_base_url)
 ```
 
 ## 设计说明
