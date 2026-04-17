@@ -86,7 +86,7 @@ class HarnessSessionBridge:
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         active_request = await self._ensure_active_request(HIJACK_CONNECT_TIMEOUT_SECONDS)
         loop = asyncio.get_running_loop()
-        call_id = f"call_{uuid4().hex}"
+        call_id = f"call{uuid4().hex}"
         result_future = loop.create_future()
         response = TurnPayload(
             model=active_request.model,

@@ -17,11 +17,12 @@
 ## Config safety
 
 - current local harness configs are not modified by helper launch commands
-- use temporary config roots for `opencode`, `codex`, and `claude`
+- use temporary config roots for `opencode`, `openclaw`, `codex`, and `claude`
 
 ## Debug tips
 
 - `harness_to_mcp --port 9330`
+- `harness_to_mcp openclaw --port 9330`
 - `harness_to_mcp codex --port 9330`
 - `harness_to_mcp claude --port 9330`
 - `curl http://127.0.0.1:9330/harness_to_mcp/health`

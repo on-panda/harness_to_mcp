@@ -11,6 +11,7 @@
 ## 当前支持的 harness
 
 - `harness_to_mcp opencode`，通过 OpenAI chat completions API 接入
+- `harness_to_mcp openclaw`，通过 OpenAI chat completions API 接入
 - `harness_to_mcp codex`，通过 OpenAI responses API 接入
 - `harness_to_mcp claude`，通过 Anthropic messages API 接入
 
@@ -62,7 +63,7 @@ harness_to_mcp
 ## 直接启动某个 harness
 
 ```bash
-harness_to_mcp claude/codex/opencode
+harness_to_mcp claude/codex/opencode/openclaw
 ```
 
 这些 helper 命令会各自启动一个同进程持有的 server，再拉起一个对应的 harness 实例。即使 harness 后续退出，server 进程仍然保持运行。
@@ -81,7 +82,7 @@ with HarnessToMcp(port=9330) as server:
 ## 设计说明
 
 - LLM API 层已经拆成可复用 adapter，分别处理 chat completions、responses、messages
-- harness 启动层已经拆成可复用 launcher，分别处理 `opencode`、`codex`、`claude`
+- harness 启动层已经拆成可复用 launcher，分别处理 `opencode`、`openclaw`、`codex`、`claude`
 - 纯 server 模式不会自动拉起 harness
 - 被拦截后处于等待状态的请求，会通过周期性 heartbeat 保活，直到 MCP 决定下一次 tool call
 - 如果 harness 在 30 秒内没有重新连回 hijack API，MCP 请求会收到 hijack 未连接的错误

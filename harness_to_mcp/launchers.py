@@ -14,6 +14,8 @@ HIJACK_PROVIDER_ID = "harness_to_mcp"
 LAUNCH_PROMPT = "<|harness_to_mcp|> MCP initialize -> launch harness"
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-20250514"
 CODEX_SESSION_TOKEN_ENV = "HARNESS_TO_MCP_CODEX_KEY"
+OPENCLAW_SESSION_TOKEN_ENV = "HARNESS_TO_MCP_OPENCLAW_KEY"
+OPENCLAW_WORKDIR_ENV = "HARNESS_TO_MCP_OPENCLAW_WORKDIR"
 
 
 @dataclass(slots=True)
@@ -147,8 +149,69 @@ class ClaudeLauncher(HarnessLauncher):
         return HarnessRuntime(session_token=session_token, tempdir=tempdir, env=env, command=command)
 
 
+class OpenclawLauncher(HarnessLauncher):
+    name = "openclaw"
+    adapter_name = "openai_chat"
+
+    def create_runtime(self, *, base_url_root: str, session_token: str | None = None, prompt: str = LAUNCH_PROMPT) -> HarnessRuntime:
+        session_token = session_token or uuid.uuid4().hex
+        tempdir = tempfile.TemporaryDirectory(prefix="harness_to_mcp_openclaw_")
+        temp_root = Path(tempdir.name)
+        home = temp_root / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        config_path = temp_root / "openclaw.json"
+        config_path.write_text(_openclaw_config(f"{base_url_root.rstrip('/')}/v1"), encoding="utf-8")
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        env["OPENCLAW_HOME"] = str(home)
+        env["OPENCLAW_STATE_DIR"] = str(temp_root / "state")
+        env["OPENCLAW_CONFIG_PATH"] = str(config_path)
+        env[OPENCLAW_SESSION_TOKEN_ENV] = session_token
+        return HarnessRuntime(
+            session_token=session_token,
+            tempdir=tempdir,
+            env=env,
+            command=[
+                "openclaw",
+                "agent",
+                "--local",
+                "--session-id",
+                session_token,
+                "--message",
+                prompt,
+                "--json",
+            ],
+            log_path=temp_root / "openclaw.log",
+        )
+
+    def create_process(self, *, base_url_root: str, session_token: str, prompt: str, workdir: str) -> tuple[HarnessRuntime, subprocess.Popen[str]]:
+        runtime = self.create_runtime(base_url_root=base_url_root, session_token=session_token, prompt=prompt)
+        runtime.env[OPENCLAW_WORKDIR_ENV] = str(Path(workdir).resolve())
+        stdout = subprocess.DEVNULL
+        if runtime.log_path is not None:
+            stdout = runtime.log_path.open("a", encoding="utf-8", buffering=1)
+        process = subprocess.Popen(
+            runtime.command,
+            cwd=workdir,
+            env=runtime.env,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        return runtime, process
+
+    def run(self, *, base_url_root: str, session_token: str | None = None, prompt: str = LAUNCH_PROMPT, workdir: str | None = None) -> int:
+        runtime = self.create_runtime(base_url_root=base_url_root, session_token=session_token, prompt=prompt)
+        runtime.env[OPENCLAW_WORKDIR_ENV] = str(Path(workdir or os.getcwd()).resolve())
+        try:
+            return subprocess.run(runtime.command, cwd=workdir, env=runtime.env).returncode
+        finally:
+            runtime.cleanup()
+
+
 def build_launchers() -> dict[str, HarnessLauncher]:
-    launchers = [OpencodeLauncher(), CodexLauncher(), ClaudeLauncher()]
+    launchers = [OpencodeLauncher(), CodexLauncher(), ClaudeLauncher(), OpenclawLauncher()]
     return {launcher.name: launcher for launcher in launchers}
 
 
@@ -170,6 +233,39 @@ def _opencode_config(base_url: str, session_token: str) -> str:
                     "options": {"baseURL": base_url, "apiKey": session_token},
                     "models": {HIJACK_MODEL_ID: {"tool_call": True, "reasoning": False, "temperature": True}},
                 }
+            },
+        },
+        indent=2,
+    ) + "\n"
+
+
+def _openclaw_config(base_url: str) -> str:
+    return json.dumps(
+        {
+            "agents": {
+                "defaults": {
+                    "workspace": f"${{{OPENCLAW_WORKDIR_ENV}}}",
+                    "skipBootstrap": True,
+                    "model": {"primary": f"{HIJACK_PROVIDER_ID}/{HIJACK_MODEL_ID}"},
+                }
+            },
+            "models": {
+                "mode": "merge",
+                "providers": {
+                    HIJACK_PROVIDER_ID: {
+                        "baseUrl": base_url,
+                        "apiKey": f"${{{OPENCLAW_SESSION_TOKEN_ENV}}}",
+                        "api": "openai-completions",
+                        "authHeader": True,
+                        "models": [
+                            {
+                                "id": HIJACK_MODEL_ID,
+                                "name": "HarnessToMcp",
+                                "api": "openai-completions",
+                            }
+                        ],
+                    }
+                },
             },
         },
         indent=2,

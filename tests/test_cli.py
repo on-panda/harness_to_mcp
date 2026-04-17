@@ -30,6 +30,13 @@ def test_claude_parser_defaults() -> None:
     assert args.prompt == LAUNCH_PROMPT
 
 
+def test_openclaw_parser_defaults() -> None:
+    args = build_argument_parser().parse_args(["openclaw"])
+    assert args.host == DEFAULT_HOST
+    assert args.port == DEFAULT_PORT
+    assert args.prompt == LAUNCH_PROMPT
+
+
 def test_build_config_embeds_provider_and_token() -> None:
     text = build_config(base_url="http://127.0.0.1:9330/harness_to_mcp/v1", session_token="token-1")
     assert HIJACK_PROVIDER_ID in text

@@ -11,6 +11,7 @@
 ## Supported harnesses
 
 - `harness_to_mcp opencode` via OpenAI chat completions
+- `harness_to_mcp openclaw` via OpenAI chat completions
 - `harness_to_mcp codex` via OpenAI responses API
 - `harness_to_mcp claude` via Anthropic messages API
 
@@ -62,7 +63,7 @@ This mode starts only the server. It listens on MCP plus all hijack API routes, 
 ## Launch a harness directly
 
 ```bash
-harness_to_mcp claude/codex/opencode
+harness_to_mcp claude/codex/opencode/openclaw
 ```
 
 Each helper command starts its own colocated server and one harness instance together. If the harness exits later, the server process keeps running.
@@ -81,7 +82,7 @@ with HarnessToMcp(port=9330) as server:
 ## Notes
 
 - the LLM API layer is split into reusable adapters for chat completions, responses, and messages
-- the harness layer is split into reusable launchers for `opencode`, `codex`, and `claude`
+- the harness layer is split into reusable launchers for `opencode`, `openclaw`, `codex`, and `claude`
 - plain server mode never auto-launches a harness
 - intercepted waiting requests stay alive with periodic heartbeat bytes while MCP is deciding the next tool call
 - if the harness does not reconnect to the hijack API within 30 seconds, MCP requests fail with a hijack-not-connected error
