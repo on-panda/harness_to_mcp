@@ -34,13 +34,27 @@ def test_responses_adapter_builds_function_call_stream() -> None:
     adapter = OpenAIResponsesAdapter()
     payload = TurnPayload(
         model="demo-model",
-        tool_call=ToolCallSpec(call_id="call_1", name="exec_command", arguments={"cmd": "printf hi"}),
+        tool_calls=[ToolCallSpec(call_id="call_1", name="exec_command", arguments={"cmd": "printf hi"})],
     )
     chunks = adapter.build_stream_chunks(payload)
     assert chunks[-1] == b"data: [DONE]\n\n"
     combined = b"".join(chunks).decode("utf-8")
     assert "response.function_call_arguments.done" in combined
     assert '"call_id": "call_1"' in combined
+
+
+def test_responses_adapter_builds_batched_function_calls() -> None:
+    adapter = OpenAIResponsesAdapter()
+    payload = TurnPayload(
+        model="demo-model",
+        tool_calls=[
+            ToolCallSpec(call_id="call_1", name="exec_command", arguments={"cmd": "printf hi"}),
+            ToolCallSpec(call_id="call_2", name="exec_command", arguments={"cmd": "pwd"}),
+        ],
+    )
+    response = adapter.build_json_response(payload)
+    assert response["parallel_tool_calls"] is True
+    assert [item["call_id"] for item in response["output"]] == ["call_1", "call_2"]
 
 
 def test_anthropic_adapter_extracts_tools_and_results() -> None:
@@ -65,12 +79,26 @@ def test_anthropic_adapter_builds_tool_use_json() -> None:
     adapter = AnthropicMessagesAdapter()
     payload = TurnPayload(
         model="claude-sonnet-4-20250514",
-        tool_call=ToolCallSpec(call_id="toolu_1", name="Bash", arguments={"cmd": "printf hi"}),
+        tool_calls=[ToolCallSpec(call_id="toolu_1", name="Bash", arguments={"cmd": "printf hi"})],
     )
     response = adapter.build_json_response(payload)
     assert response["stop_reason"] == "tool_use"
     assert response["content"][0]["type"] == "tool_use"
     assert response["content"][0]["input"]["cmd"] == "printf hi"
+
+
+def test_anthropic_adapter_builds_batched_tool_use_json() -> None:
+    adapter = AnthropicMessagesAdapter()
+    payload = TurnPayload(
+        model="claude-sonnet-4-20250514",
+        tool_calls=[
+            ToolCallSpec(call_id="toolu_1", name="Bash", arguments={"cmd": "printf hi"}),
+            ToolCallSpec(call_id="toolu_2", name="Bash", arguments={"cmd": "pwd"}),
+        ],
+    )
+    response = adapter.build_json_response(payload)
+    assert response["stop_reason"] == "tool_use"
+    assert [item["id"] for item in response["content"]] == ["toolu_1", "toolu_2"]
 
 
 def test_tool_result_to_mcp_content_preserves_image_blocks() -> None:

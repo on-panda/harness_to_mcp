@@ -29,7 +29,7 @@ class ToolResult:
 class TurnPayload:
     model: str
     text: str | None = None
-    tool_call: ToolCallSpec | None = None
+    tool_calls: list[ToolCallSpec] | None = None
 
 
 @dataclass(slots=True)
@@ -91,11 +91,12 @@ class OpenAIChatAdapter(ApiAdapter):
         created = int(time.time())
         message: dict[str, Any] = {"role": "assistant", "content": payload.text or ""}
         finish_reason = "stop"
-        if payload.tool_call is not None:
+        tool_calls = _payload_tool_calls(payload)
+        if tool_calls:
             message = {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": [_openai_chat_tool_call_message(payload.tool_call)],
+                "tool_calls": [_openai_chat_tool_call_message(tool_call) for tool_call in tool_calls],
             }
             finish_reason = "tool_calls"
         return {
@@ -110,7 +111,8 @@ class OpenAIChatAdapter(ApiAdapter):
     def build_stream_chunks(self, payload: TurnPayload) -> list[bytes]:
         response_id = _response_id("chatcmpl-harness-to-mcp")
         created = int(time.time())
-        if payload.tool_call is not None:
+        tool_calls = _payload_tool_calls(payload)
+        if tool_calls:
             return [
                 _encode_data(
                     {
@@ -122,7 +124,10 @@ class OpenAIChatAdapter(ApiAdapter):
                             "index": 0,
                             "delta": {
                                 "role": "assistant",
-                                "tool_calls": [_openai_chat_tool_call_chunk(payload.tool_call)],
+                                "tool_calls": [
+                                    _openai_chat_tool_call_chunk(tool_call, index)
+                                    for index, tool_call in enumerate(tool_calls)
+                                ],
                             },
                             "finish_reason": None,
                         }],
@@ -210,8 +215,9 @@ class OpenAIResponsesAdapter(ApiAdapter):
         created = int(time.time())
         output = [_responses_message_item(payload.text or "")]
         output_text = payload.text or ""
-        if payload.tool_call is not None:
-            output = [_responses_function_call_item(payload.tool_call)]
+        tool_calls = _payload_tool_calls(payload)
+        if tool_calls:
+            output = [_responses_function_call_item(tool_call) for tool_call in tool_calls]
             output_text = ""
         return {
             "id": response_id,
@@ -221,15 +227,16 @@ class OpenAIResponsesAdapter(ApiAdapter):
             "model": payload.model,
             "output": output,
             "output_text": output_text,
-            "parallel_tool_calls": False,
+            "parallel_tool_calls": len(tool_calls) > 1,
         }
 
     def build_stream_chunks(self, payload: TurnPayload) -> list[bytes]:
         response_id = _response_id("resp-harness-to-mcp")
         created = int(time.time())
-        if payload.tool_call is not None:
-            item = _responses_function_call_item(payload.tool_call)
-            return [
+        tool_calls = _payload_tool_calls(payload)
+        if tool_calls:
+            items = [_responses_function_call_item(tool_call) for tool_call in tool_calls]
+            chunks = [
                 _encode_event(
                     "response.created",
                     {
@@ -258,65 +265,75 @@ class OpenAIResponsesAdapter(ApiAdapter):
                         },
                     },
                 ),
-                _encode_event(
-                    "response.output_item.added",
-                    {
-                        "type": "response.output_item.added",
-                        "response_id": response_id,
-                        "output_index": 0,
-                        "item": {
-                            "id": item["id"],
-                            "type": "function_call",
-                            "status": "in_progress",
-                            "call_id": item["call_id"],
-                            "name": item["name"],
-                            "arguments": "",
-                        },
-                    },
-                ),
-                _encode_event(
-                    "response.function_call_arguments.delta",
-                    {
-                        "type": "response.function_call_arguments.delta",
-                        "item_id": item["id"],
-                        "output_index": 0,
-                        "delta": item["arguments"],
-                    },
-                ),
-                _encode_event(
-                    "response.function_call_arguments.done",
-                    {
-                        "type": "response.function_call_arguments.done",
-                        "item_id": item["id"],
-                        "output_index": 0,
-                        "arguments": item["arguments"],
-                    },
-                ),
-                _encode_event(
-                    "response.output_item.done",
-                    {
-                        "type": "response.output_item.done",
-                        "response_id": response_id,
-                        "output_index": 0,
-                        "item": item,
-                    },
-                ),
-                _encode_event(
-                    "response.completed",
-                    {
-                        "type": "response.completed",
-                        "response": {
-                            "id": response_id,
-                            "object": "response",
-                            "created_at": created,
-                            "status": "completed",
-                            "model": payload.model,
-                            "output": [item],
-                        },
-                    },
-                ),
-                b"data: [DONE]\n\n",
             ]
+            for output_index, item in enumerate(items):
+                chunks.extend(
+                    [
+                        _encode_event(
+                            "response.output_item.added",
+                            {
+                                "type": "response.output_item.added",
+                                "response_id": response_id,
+                                "output_index": output_index,
+                                "item": {
+                                    "id": item["id"],
+                                    "type": "function_call",
+                                    "status": "in_progress",
+                                    "call_id": item["call_id"],
+                                    "name": item["name"],
+                                    "arguments": "",
+                                },
+                            },
+                        ),
+                        _encode_event(
+                            "response.function_call_arguments.delta",
+                            {
+                                "type": "response.function_call_arguments.delta",
+                                "item_id": item["id"],
+                                "output_index": output_index,
+                                "delta": item["arguments"],
+                            },
+                        ),
+                        _encode_event(
+                            "response.function_call_arguments.done",
+                            {
+                                "type": "response.function_call_arguments.done",
+                                "item_id": item["id"],
+                                "output_index": output_index,
+                                "arguments": item["arguments"],
+                            },
+                        ),
+                        _encode_event(
+                            "response.output_item.done",
+                            {
+                                "type": "response.output_item.done",
+                                "response_id": response_id,
+                                "output_index": output_index,
+                                "item": item,
+                            },
+                        ),
+                    ]
+                )
+            chunks.extend(
+                [
+                    _encode_event(
+                        "response.completed",
+                        {
+                            "type": "response.completed",
+                            "response": {
+                                "id": response_id,
+                                "object": "response",
+                                "created_at": created,
+                                "status": "completed",
+                                "model": payload.model,
+                                "output": items,
+                            },
+                        },
+                    ),
+                    b"data: [DONE]\n\n",
+                ]
+            )
+            return chunks
         item = _responses_message_item(payload.text or "")
         return [
             _encode_event(
@@ -440,7 +457,8 @@ class AnthropicMessagesAdapter(ApiAdapter):
         )
 
     def build_json_response(self, payload: TurnPayload) -> dict[str, Any]:
-        if payload.tool_call is not None:
+        tool_calls = _payload_tool_calls(payload)
+        if tool_calls:
             return {
                 "id": _response_id("msg-harness-to-mcp"),
                 "type": "message",
@@ -449,10 +467,11 @@ class AnthropicMessagesAdapter(ApiAdapter):
                 "content": [
                     {
                         "type": "tool_use",
-                        "id": payload.tool_call.call_id,
-                        "name": payload.tool_call.name,
-                        "input": payload.tool_call.arguments,
+                        "id": tool_call.call_id,
+                        "name": tool_call.name,
+                        "input": tool_call.arguments,
                     }
+                    for tool_call in tool_calls
                 ],
                 "stop_reason": "tool_use",
                 "stop_sequence": None,
@@ -471,8 +490,9 @@ class AnthropicMessagesAdapter(ApiAdapter):
 
     def build_stream_chunks(self, payload: TurnPayload) -> list[bytes]:
         message_id = _response_id("msg-harness-to-mcp")
-        if payload.tool_call is not None:
-            return [
+        tool_calls = _payload_tool_calls(payload)
+        if tool_calls:
+            chunks = [
                 _encode_event(
                     "message_start",
                     {
@@ -489,41 +509,51 @@ class AnthropicMessagesAdapter(ApiAdapter):
                         },
                     },
                 ),
-                _encode_event(
-                    "content_block_start",
-                    {
-                        "type": "content_block_start",
-                        "index": 0,
-                        "content_block": {
-                            "type": "tool_use",
-                            "id": payload.tool_call.call_id,
-                            "name": payload.tool_call.name,
-                            "input": {},
-                        },
-                    },
-                ),
-                _encode_event(
-                    "content_block_delta",
-                    {
-                        "type": "content_block_delta",
-                        "index": 0,
-                        "delta": {
-                            "type": "input_json_delta",
-                            "partial_json": _compact_json(payload.tool_call.arguments),
-                        },
-                    },
-                ),
-                _encode_event("content_block_stop", {"type": "content_block_stop", "index": 0}),
-                _encode_event(
-                    "message_delta",
-                    {
-                        "type": "message_delta",
-                        "delta": {"stop_reason": "tool_use", "stop_sequence": None},
-                        "usage": {"output_tokens": 0},
-                    },
-                ),
-                _encode_event("message_stop", {"type": "message_stop"}),
             ]
+            for index, tool_call in enumerate(tool_calls):
+                chunks.extend(
+                    [
+                        _encode_event(
+                            "content_block_start",
+                            {
+                                "type": "content_block_start",
+                                "index": index,
+                                "content_block": {
+                                    "type": "tool_use",
+                                    "id": tool_call.call_id,
+                                    "name": tool_call.name,
+                                    "input": {},
+                                },
+                            },
+                        ),
+                        _encode_event(
+                            "content_block_delta",
+                            {
+                                "type": "content_block_delta",
+                                "index": index,
+                                "delta": {
+                                    "type": "input_json_delta",
+                                    "partial_json": _compact_json(tool_call.arguments),
+                                },
+                            },
+                        ),
+                        _encode_event("content_block_stop", {"type": "content_block_stop", "index": index}),
+                    ]
+                )
+            chunks.extend(
+                [
+                    _encode_event(
+                        "message_delta",
+                        {
+                            "type": "message_delta",
+                            "delta": {"stop_reason": "tool_use", "stop_sequence": None},
+                            "usage": {"output_tokens": 0},
+                        },
+                    ),
+                    _encode_event("message_stop", {"type": "message_stop"}),
+                ]
+            )
+            return chunks
         return [
             _encode_event(
                 "message_start",
@@ -699,13 +729,17 @@ def _openai_chat_tool_call_message(tool_call: ToolCallSpec) -> dict[str, Any]:
     }
 
 
-def _openai_chat_tool_call_chunk(tool_call: ToolCallSpec) -> dict[str, Any]:
+def _openai_chat_tool_call_chunk(tool_call: ToolCallSpec, index: int) -> dict[str, Any]:
     return {
-        "index": 0,
+        "index": index,
         "id": tool_call.call_id,
         "type": "function",
         "function": {"name": tool_call.name, "arguments": _compact_json(tool_call.arguments)},
     }
+
+
+def _payload_tool_calls(payload: TurnPayload) -> list[ToolCallSpec]:
+    return payload.tool_calls or []
 
 
 def _looks_like_title_request(fragments: list[str]) -> bool:

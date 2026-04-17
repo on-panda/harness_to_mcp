@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 HIJACK_CONNECT_TIMEOUT_SECONDS = 30
 ACTIVE_REQUEST_GRACE_SECONDS = 2
 INITIAL_EXTERNAL_HARNESS_WAIT_SECONDS = 2
+TOOL_CALL_BATCH_WINDOW_SECONDS = 0.001
 
 
 @dataclass(slots=True)
@@ -51,7 +52,10 @@ class HarnessSessionBridge:
         self.last_harness_activity_at = 0.0
         self.tools: list[Any] = []
         self.active_request: ActiveHijackRequest | None = None
+        self.pending_tool_calls: list[ToolCallSpec] = []
+        self.inflight_tool_call_ids: set[str] = set()
         self.pending_tool_results: dict[str, asyncio.Future[Any]] = {}
+        self.tool_call_batch_task: asyncio.Task[None] | None = None
         self.mcp_open = True
         self._tools_ready = anyio.Event()
         self._active_request_ready = anyio.Event()
@@ -64,13 +68,21 @@ class HarnessSessionBridge:
             self.mcp_open = True
 
     async def close(self) -> None:
+        batch_task = self.tool_call_batch_task
         async with self.lock:
             self.mcp_open = False
             await self._stop_harness_locked()
+            self.pending_tool_calls = []
+            self.inflight_tool_call_ids = set()
+            self.tool_call_batch_task = None
             self._fail_pending_locked(RuntimeError("MCP session closed."))
             self._clear_active_request_locked(RuntimeError("MCP session closed."))
             self.tools = []
             self._tools_ready = anyio.Event()
+        if batch_task is not None:
+            batch_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await batch_task
 
     async def ensure_tools_ready(self, timeout_seconds: float) -> list[Any]:
         started_at = time.monotonic()
@@ -84,23 +96,15 @@ class HarnessSessionBridge:
         return self.tools
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
-        active_request = await self._ensure_active_request(HIJACK_CONNECT_TIMEOUT_SECONDS)
         loop = asyncio.get_running_loop()
         call_id = f"call{uuid4().hex}"
         result_future = loop.create_future()
-        response = TurnPayload(
-            model=active_request.model,
-            tool_call=ToolCallSpec(call_id=call_id, name=name, arguments=arguments),
-        )
+        tool_call = ToolCallSpec(call_id=call_id, name=name, arguments=arguments)
         async with self.lock:
             self.pending_tool_results[call_id] = result_future
-            if active_request.response_future.done():
-                self.pending_tool_results.pop(call_id, None)
-                raise RuntimeError("Hijack API request is no longer active.")
-            active_request.response_future.set_result(response)
-            self.active_request = None
-            self._active_request_ready = anyio.Event()
-        logger.info("Dispatching tool call %s (%s) for session %s", call_id, name, self.session_id)
+            self.pending_tool_calls.append(tool_call)
+            if self.tool_call_batch_task is None or self.tool_call_batch_task.done():
+                self.tool_call_batch_task = asyncio.create_task(self._dispatch_tool_call_batches())
         output = await result_future
         logger.info("Tool call %s succeeded for session %s", call_id, self.session_id)
         return output
@@ -121,6 +125,7 @@ class HarnessSessionBridge:
                 logger.info("Harness connected for session %s via %s", self.session_id, adapter_name)
             self.last_harness_activity_at = time.monotonic()
             for tool_result in request.tool_results:
+                self.inflight_tool_call_ids.discard(tool_result.tool_call_id)
                 result_future = self.pending_tool_results.pop(tool_result.tool_call_id, None)
                 if result_future is not None and not result_future.done():
                     result_future.set_result(tool_result.content)
@@ -175,6 +180,8 @@ class HarnessSessionBridge:
             if now < self.external_harness_wait_deadline:
                 return False
             return True
+        if self.inflight_tool_call_ids:
+            return False
         if self.active_request is not None:
             return False
         return now - self.last_harness_activity_at > ACTIVE_REQUEST_GRACE_SECONDS
@@ -186,6 +193,8 @@ class HarnessSessionBridge:
             return
         if restart:
             await self._stop_harness_locked()
+            self.pending_tool_calls = []
+            self.inflight_tool_call_ids = set()
             self._fail_pending_locked(RuntimeError("Harness restarted before tool result arrived."))
             self._clear_active_request_locked(RuntimeError("Harness restarted."))
             self.tools = []
@@ -218,6 +227,7 @@ class HarnessSessionBridge:
             if not future.done():
                 future.set_exception(exc)
         self.pending_tool_results.clear()
+        self.inflight_tool_call_ids = set()
 
     def _clear_active_request_locked(self, exc: Exception) -> None:
         if self.active_request is None:
@@ -226,6 +236,61 @@ class HarnessSessionBridge:
             self.active_request.response_future.set_exception(exc)
         self.active_request = None
         self._active_request_ready = anyio.Event()
+
+    async def _dispatch_tool_call_batches(self) -> None:
+        task = asyncio.current_task()
+        try:
+            while True:
+                async with self.lock:
+                    if not self.pending_tool_calls:
+                        return
+                await anyio.sleep(TOOL_CALL_BATCH_WINDOW_SECONDS)
+                active_request = await self._ensure_active_request(HIJACK_CONNECT_TIMEOUT_SECONDS)
+                while True:
+                    async with self.lock:
+                        if not self.pending_tool_calls:
+                            batch: list[ToolCallSpec] = []
+                        elif active_request.response_future.done():
+                            batch = []
+                        else:
+                            batch = self.pending_tool_calls
+                            self.pending_tool_calls = []
+                            self.inflight_tool_call_ids.update(tool_call.call_id for tool_call in batch)
+                            active_request.response_future.set_result(
+                                TurnPayload(model=active_request.model, tool_calls=batch)
+                            )
+                            self.active_request = None
+                            self._active_request_ready = anyio.Event()
+                    if batch:
+                        if len(batch) == 1:
+                            logger.info("Dispatching tool call %s (%s) for session %s", batch[0].call_id, batch[0].name, self.session_id)
+                        else:
+                            logger.info(
+                                "Dispatching %s tool calls for session %s: %s",
+                                len(batch),
+                                self.session_id,
+                                ", ".join(tool_call.name for tool_call in batch),
+                            )
+                        break
+                    async with self.lock:
+                        if not self.pending_tool_calls:
+                            break
+                    active_request = await self._ensure_active_request(HIJACK_CONNECT_TIMEOUT_SECONDS)
+        except Exception as exc:
+            async with self.lock:
+                pending_tool_calls = self.pending_tool_calls
+                self.pending_tool_calls = []
+                for tool_call in pending_tool_calls:
+                    result_future = self.pending_tool_results.pop(tool_call.call_id, None)
+                    if result_future is not None and not result_future.done():
+                        result_future.set_exception(exc)
+            raise
+        finally:
+            async with self.lock:
+                if self.tool_call_batch_task is task:
+                    self.tool_call_batch_task = None
+                    if self.pending_tool_calls:
+                        self.tool_call_batch_task = asyncio.create_task(self._dispatch_tool_call_batches())
 
     @staticmethod
     def _wait_or_kill_process(process: subprocess.Popen[str]) -> None:

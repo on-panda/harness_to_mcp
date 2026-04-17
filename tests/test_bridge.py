@@ -4,7 +4,7 @@ import logging
 from types import SimpleNamespace
 
 import harness_to_mcp.bridge as bridge_module
-from harness_to_mcp.adapters import HijackRequest
+from harness_to_mcp.adapters import HijackRequest, ToolResult
 from harness_to_mcp.bridge import ActiveHijackRequest, HarnessSessionBridge
 
 
@@ -30,11 +30,81 @@ def test_bridge_call_tool_uses_chat_safe_call_id() -> None:
         try:
             task = asyncio.create_task(session.call_tool("read", {"path": "README.md"}))
             payload = await active_request.response_future
-            assert payload.tool_call is not None
-            assert payload.tool_call.call_id == "callabc123"
+            assert payload.tool_calls is not None
+            assert payload.tool_calls[0].call_id == "callabc123"
             result_future = session.pending_tool_results.pop("callabc123")
             result_future.set_result("ok")
             assert await task == "ok"
+        finally:
+            bridge_module.uuid4 = original_uuid4
+            await session.close()
+
+    asyncio.run(run())
+
+
+def test_bridge_batches_tool_calls_from_same_session() -> None:
+    async def run() -> None:
+        session = HarnessSessionBridge(
+            session_id="session-1",
+            workdir="/tmp/demo",
+            base_url_root="http://127.0.0.1:9330/harness_to_mcp",
+            launchers={},
+            default_launcher_name=None,
+        )
+        loop = asyncio.get_running_loop()
+        active_request = ActiveHijackRequest(
+            model="demo-model",
+            stream=True,
+            response_future=loop.create_future(),
+            created_at=0.0,
+        )
+        session.active_request = active_request
+        original_uuid4 = bridge_module.uuid4
+        bridge_module.uuid4 = iter(
+            [
+                SimpleNamespace(hex="0001"),
+                SimpleNamespace(hex="0002"),
+                SimpleNamespace(hex="0003"),
+                SimpleNamespace(hex="0004"),
+                SimpleNamespace(hex="0005"),
+            ]
+        ).__next__
+        try:
+            tasks = [
+                asyncio.create_task(session.call_tool("bash", {"command": "pwd", "description": "显示当前工作目录"})),
+                asyncio.create_task(session.call_tool("bash", {"command": "git status", "description": "查看 git 仓库状态"})),
+                asyncio.create_task(session.call_tool("bash", {"command": "git branch -a", "description": "查看所有分支"})),
+                asyncio.create_task(session.call_tool("bash", {"command": "git log --oneline -10", "description": "查看最近10条提交记录"})),
+                asyncio.create_task(session.call_tool("bash", {"command": "ls -la", "description": "列出目录内容"})),
+            ]
+            payload = await active_request.response_future
+            assert [tool_call.name for tool_call in payload.tool_calls or []] == ["bash"] * 5
+            assert [tool_call.arguments for tool_call in payload.tool_calls or []] == [
+                {"command": "pwd", "description": "显示当前工作目录"},
+                {"command": "git status", "description": "查看 git 仓库状态"},
+                {"command": "git branch -a", "description": "查看所有分支"},
+                {"command": "git log --oneline -10", "description": "查看最近10条提交记录"},
+                {"command": "ls -la", "description": "列出目录内容"},
+            ]
+            next_request = await session.on_hijack_request(
+                adapter_name="openai_chat",
+                request=HijackRequest(
+                    model="demo-model",
+                    stream=True,
+                    tools=[],
+                    tool_results=[
+                        ToolResult(tool_call_id="call0001", content="/tmp/demo"),
+                        ToolResult(tool_call_id="call0002", content="clean"),
+                        ToolResult(tool_call_id="call0003", content="* main"),
+                        ToolResult(tool_call_id="call0004", content="abc123"),
+                        ToolResult(tool_call_id="call0005", content="total 8"),
+                    ],
+                ),
+            )
+            assert await asyncio.gather(*tasks) == ["/tmp/demo", "clean", "* main", "abc123", "total 8"]
+            await session.release_hijack_request(next_request)
+            with contextlib.suppress(RuntimeError):
+                await next_request.response_future
         finally:
             bridge_module.uuid4 = original_uuid4
             await session.close()
