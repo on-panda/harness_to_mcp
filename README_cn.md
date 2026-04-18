@@ -48,6 +48,8 @@ http://127.0.0.1:<port>/mcp
 
 把任意 MCP 客户端（Claude Desktop、Cursor、自写脚本……）指过去，该 harness 的内部 tools 就会作为标准 MCP tools 出现。
 
+也可以用 `python examples/list_tools.py` 查看当前暴露出来的 tools。
+
 #### 2. 只启动中转服务（可接入任意 harness）
 
 ```bash

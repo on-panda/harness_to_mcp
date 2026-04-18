@@ -48,6 +48,8 @@ http://127.0.0.1:<port>/mcp
 
 Point any MCP client (Claude Desktop, Cursor, your own script, ...) at it and the harness's internal tools show up as standard MCP tools.
 
+You can inspect the exposed tools with `python examples/list_tools.py`.
+
 #### 2. Only run the server (plug in any harness)
 
 ```bash
