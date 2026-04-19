@@ -16,7 +16,7 @@ from pathlib import Path
 from .adapters import HIJACK_MODEL_ID
 
 HIJACK_PROVIDER_ID = "harness_to_mcp"
-LAUNCH_PROMPT = "<|harness_to_mcp|> MCP initialize -> launch harness"
+LAUNCH_PROMPT = "<|harness_to_mcp_start|> MCP initialize -> launch harness<|harness_to_mcp_end|>"
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-20250514"
 CODEX_SESSION_TOKEN_ENV = "HARNESS_TO_MCP_CODEX_KEY"
 OPENCLAW_SESSION_TOKEN_ENV = "HARNESS_TO_MCP_OPENCLAW_KEY"

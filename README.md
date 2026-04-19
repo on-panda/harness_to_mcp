@@ -49,6 +49,7 @@ http://127.0.0.1:<port>/mcp
 Point any MCP client (Claude Desktop, Cursor, your own script, ...) at it and the harness's internal tools show up as standard MCP tools.
 
 You can inspect the exposed tools with `python examples/list_tools.py`.
+The MCP `initialize` response also mirrors the captured harness bootstrap prompts in `initialize.result.instructions`.
 
 #### 2. Only run the server (plug in any harness)
 
@@ -122,4 +123,3 @@ In short:
 ## ▮ License
 
 [The MIT License](https://en.wikipedia.org/wiki/MIT_License)
-

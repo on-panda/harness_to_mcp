@@ -9,12 +9,19 @@ from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 DEFAULT_MCP_URL = "http://127.0.0.1:9330/mcp"
+DEFAULT_PREVIEW_LENGTH = 500
 
 
-def _resolve_mcp_url(argv: list[str]) -> str:
-    if len(argv) > 1:
-        return argv[1]
-    return os.environ.get("MCP_URL") or DEFAULT_MCP_URL
+def _parse_args(argv: list[str]) -> tuple[str, bool]:
+    mcp_url = None
+    full = False
+    for arg in argv[1:]:
+        if arg in {"--full", "-f"}:
+            full = True
+            continue
+        if mcp_url is None:
+            mcp_url = arg
+    return mcp_url or os.environ.get("MCP_URL") or DEFAULT_MCP_URL, full
 
 
 def _tool_name(tool: Any) -> str:
@@ -33,10 +40,17 @@ def _tool_details(tool: Any) -> dict[str, Any]:
     return {key: value for key, value in vars(tool).items() if not key.startswith("_")}
 
 
+def _compact_preview(value: Any) -> str:
+    text = json.dumps(value, ensure_ascii=False, default=str)
+    if len(text) <= DEFAULT_PREVIEW_LENGTH:
+        return text
+    return f"{text[:DEFAULT_PREVIEW_LENGTH]}..."
+
+
 async def _run(argv: list[str]) -> int:
-    mcp_url = _resolve_mcp_url(argv)
+    mcp_url, full = _parse_args(argv)
     print(f"Connecting to MCP server: {mcp_url}")
-    print("Tip: pass a URL as the first argument, or set MCP_URL.")
+    print("Tip: pass a URL as the first argument, set MCP_URL, or use --full for full output.")
 
     try:
         async with streamablehttp_client(mcp_url) as streams:
@@ -44,6 +58,11 @@ async def _run(argv: list[str]) -> int:
             async with ClientSession(read_stream, write_stream) as session:
                 init_result = await session.initialize()
                 print(f"  MCP initialized: protocol={init_result.protocolVersion}")
+                print("\ninitialize.result.instructions:")
+                if full:
+                    print(init_result.instructions or "<empty>")
+                else:
+                    print(_compact_preview(init_result.instructions or "<empty>"))
 
                 tools_result = await session.list_tools()
                 tools = list(tools_result.tools)
@@ -56,7 +75,11 @@ async def _run(argv: list[str]) -> int:
                     return 2
 
                 print("\nFirst tool details:")
-                print(json.dumps(_tool_details(tools[0]), indent=2, ensure_ascii=False, default=str))
+                tool_details = _tool_details(tools[0])
+                if full:
+                    print(json.dumps(tool_details, indent=2, ensure_ascii=False, default=str))
+                else:
+                    print(_compact_preview(tool_details))
     except Exception as exc:
         print(f"\nFailed to list tools from {mcp_url}: {exc}")
         print("Make sure harness_to_mcp is already running and the MCP URL is correct.")

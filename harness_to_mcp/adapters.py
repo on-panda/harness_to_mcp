@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -33,11 +34,20 @@ class TurnPayload:
 
 
 @dataclass(slots=True)
+class InitialPrompts:
+    instructions: str | None = None
+    user_prompt: str | None = None
+    harness_context: str | None = None
+
+
+@dataclass(slots=True)
 class HijackRequest:
     model: str
     stream: bool
     tools: list[types.Tool]
     tool_results: list[ToolResult]
+    initial_prompts: InitialPrompts | None = None
+    initial_request: dict[str, Any] | None = None
 
 
 class ApiAdapter:
@@ -85,6 +95,8 @@ class OpenAIChatAdapter(ApiAdapter):
             stream=bool(body.get("stream")),
             tools=_extract_openai_function_tools(body.get("tools") or []),
             tool_results=_extract_chat_tool_results(body.get("messages") or []),
+            initial_prompts=_extract_openai_chat_initial_prompts(body),
+            initial_request=body,
         )
 
     def build_json_response(self, payload: TurnPayload) -> dict[str, Any]:
@@ -208,6 +220,8 @@ class OpenAIResponsesAdapter(ApiAdapter):
             stream=bool(body.get("stream")),
             tools=_extract_openai_function_tools(body.get("tools") or []),
             tool_results=_extract_responses_tool_results(body.get("input") or []),
+            initial_prompts=_extract_responses_initial_prompts(body),
+            initial_request=body,
         )
 
     def build_json_response(self, payload: TurnPayload) -> dict[str, Any]:
@@ -454,6 +468,8 @@ class AnthropicMessagesAdapter(ApiAdapter):
             stream=bool(body.get("stream")),
             tools=_extract_anthropic_tools(body.get("tools") or []),
             tool_results=_extract_anthropic_tool_results(body.get("messages") or []),
+            initial_prompts=_extract_anthropic_initial_prompts(body),
+            initial_request=body,
         )
 
     def build_json_response(self, payload: TurnPayload) -> dict[str, Any]:
@@ -626,6 +642,63 @@ def adapter_routes(adapters: dict[str, ApiAdapter]) -> dict[str, ApiAdapter]:
     return {adapter.route_path: adapter for adapter in adapters.values()}
 
 
+def _extract_openai_chat_initial_prompts(body: dict[str, Any]) -> InitialPrompts | None:
+    instructions = _join_blocks(
+        message.get("content")
+        for message in body.get("messages") or []
+        if message.get("role") == "system" and isinstance(message.get("content"), str)
+    )
+    developer_messages = [
+        _normalize_block(message.get("content"))
+        for message in body.get("messages") or []
+        if message.get("role") == "developer" and isinstance(message.get("content"), str)
+    ]
+    user_messages = [
+        _sanitize_initial_prompt(message.get("content"), decode_json_string=True)
+        for message in body.get("messages") or []
+        if message.get("role") == "user" and isinstance(message.get("content"), str)
+    ]
+    return _build_initial_prompts(
+        instructions=instructions,
+        harness_context=_join_blocks([*developer_messages, *user_messages[:-1]]),
+        user_prompt=user_messages[-1] if user_messages else None,
+    )
+
+
+def _extract_responses_initial_prompts(body: dict[str, Any]) -> InitialPrompts | None:
+    message_blocks = [
+        (_join_blocks(_responses_text_fragments(item)), item.get("role"))
+        for item in body.get("input") or []
+        if item.get("type") == "message"
+    ]
+    user_messages = [text for text, role in message_blocks if role == "user"]
+    developer_messages = [text for text, role in message_blocks if role == "developer"]
+    return _build_initial_prompts(
+        instructions=_join_blocks([body.get("instructions")]),
+        harness_context=_join_blocks([*developer_messages, *user_messages[:-1]]),
+        user_prompt=user_messages[-1] if user_messages else None,
+    )
+
+
+def _extract_anthropic_initial_prompts(body: dict[str, Any]) -> InitialPrompts | None:
+    user_blocks = [
+        content.get("text")
+        for message in body.get("messages") or []
+        if message.get("role") == "user"
+        for content in message.get("content") or []
+        if isinstance(content, dict) and isinstance(content.get("text"), str)
+    ]
+    return _build_initial_prompts(
+        instructions=_join_blocks(
+            item.get("text")
+            for item in body.get("system") or []
+            if isinstance(item, dict) and isinstance(item.get("text"), str)
+        ),
+        harness_context=_join_blocks(user_blocks[:-1]),
+        user_prompt=user_blocks[-1] if user_blocks else None,
+    )
+
+
 def _extract_openai_function_tools(raw_tools: list[dict[str, Any]]) -> list[types.Tool]:
     result: list[types.Tool] = []
     for raw_tool in raw_tools:
@@ -755,6 +828,51 @@ def _normalize_content(content: Any) -> str:
         if parts:
             return "\n".join(parts)
     return json.dumps(content, ensure_ascii=False)
+
+
+def _build_initial_prompts(
+    *,
+    instructions: str | None = None,
+    harness_context: str | None = None,
+    user_prompt: str | None = None,
+) -> InitialPrompts | None:
+    instructions = _normalize_block(instructions)
+    harness_context = _normalize_block(harness_context)
+    user_prompt = _sanitize_initial_prompt(user_prompt)
+    if instructions is None and harness_context is None and user_prompt is None:
+        return None
+    return InitialPrompts(instructions=instructions, harness_context=harness_context, user_prompt=user_prompt)
+
+
+def _join_blocks(blocks: Any) -> str | None:
+    parts = [text for text in (_normalize_block(block) for block in blocks) if text]
+    if not parts:
+        return None
+    return "\n\n".join(parts)
+
+
+def _normalize_block(text: Any) -> str | None:
+    if not isinstance(text, str):
+        return None
+    stripped = text.strip()
+    return stripped or None
+
+
+def _sanitize_initial_prompt(text: str | None, *, decode_json_string: bool = False) -> str | None:
+    if not isinstance(text, str):
+        return None
+    if decode_json_string:
+        candidate = text.strip()
+        if candidate.startswith('"'):
+            try:
+                decoded = json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if isinstance(decoded, str):
+                    text = decoded
+    text = re.sub(r"<\|harness_to_mcp_start\|>.*?<\|harness_to_mcp_end\|>", "", text, flags=re.S)
+    return _normalize_block(text)
 
 
 def truncate_long_text(text: str, max_text_length: int = MAX_TEXT_LENGTH) -> str:

@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import anyio
 
-from .adapters import HijackRequest, ToolCallSpec, TurnPayload
+from .adapters import HijackRequest, InitialPrompts, ToolCallSpec, TurnPayload
 from .launchers import HarnessLauncher, HarnessRuntime, LAUNCH_PROMPT, launcher_for_adapter
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,8 @@ class HarnessSessionBridge:
         self.runtime: HarnessRuntime | None = None
         self.last_harness_activity_at = 0.0
         self.tools: list[Any] = []
+        self.initial_prompts: InitialPrompts | None = None
+        self.initial_request: dict[str, Any] | None = None
         self.active_request: ActiveHijackRequest | None = None
         self.pending_tool_calls: list[ToolCallSpec] = []
         self.inflight_tool_call_ids: set[str] = set()
@@ -78,6 +80,8 @@ class HarnessSessionBridge:
             self._fail_pending_locked(RuntimeError("MCP session closed."))
             self._clear_active_request_locked(RuntimeError("MCP session closed."))
             self.tools = []
+            self.initial_prompts = None
+            self.initial_request = None
             self._tools_ready = anyio.Event()
         if batch_task is not None:
             batch_task.cancel()
@@ -94,6 +98,20 @@ class HarnessSessionBridge:
         with anyio.fail_after(remaining):
             await event.wait()
         return self.tools
+
+    async def get_initialize_instructions(self, *, wait_for_tools: bool, timeout_seconds: float) -> str | None:
+        instructions = self._render_initialize_instructions()
+        if instructions is not None or not wait_for_tools or self.launcher_name is None:
+            return instructions
+        await self.ensure_tools_ready(timeout_seconds)
+        return self._render_initialize_instructions()
+
+    async def get_initialize_initial_request(self, *, wait_for_tools: bool, timeout_seconds: float) -> dict[str, Any] | None:
+        initial_request = self.initial_request
+        if initial_request is not None or not wait_for_tools or self.launcher_name is None:
+            return initial_request
+        await self.ensure_tools_ready(timeout_seconds)
+        return self.initial_request
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         loop = asyncio.get_running_loop()
@@ -130,6 +148,10 @@ class HarnessSessionBridge:
                 if result_future is not None and not result_future.done():
                     result_future.set_result(tool_result.content)
             if request.tools:
+                if self.initial_prompts is None:
+                    self.initial_prompts = request.initial_prompts
+                if self.initial_request is None:
+                    self.initial_request = request.initial_request
                 self.tools = request.tools
                 self._tools_ready.set()
             self._clear_active_request_locked(RuntimeError("Hijack API request replaced by a newer request."))
@@ -198,6 +220,8 @@ class HarnessSessionBridge:
             self._fail_pending_locked(RuntimeError("Harness restarted before tool result arrived."))
             self._clear_active_request_locked(RuntimeError("Harness restarted."))
             self.tools = []
+            self.initial_prompts = None
+            self.initial_request = None
             self._tools_ready = anyio.Event()
         if self.process is not None and self.process.poll() is None:
             return
@@ -291,6 +315,24 @@ class HarnessSessionBridge:
                     if self.pending_tool_calls:
                         self.tool_call_batch_task = asyncio.create_task(self._dispatch_tool_call_batches())
 
+    def _render_initialize_instructions(self) -> str | None:
+        prompts = self.initial_prompts
+        if prompts is None:
+            return None
+        tag_prefix = (self.launcher_name or "harness").replace("-", "_")
+        sections = [
+            text
+            for text in [
+                prompts.instructions,
+                _tagged_block(tag_prefix, "harness_context", prompts.harness_context),
+                _tagged_block(tag_prefix, "initial_user_prompt", prompts.user_prompt),
+            ]
+            if text
+        ]
+        if not sections:
+            return None
+        return "\n\n".join(sections)
+
     @staticmethod
     def _wait_or_kill_process(process: subprocess.Popen[str]) -> None:
         try:
@@ -342,13 +384,47 @@ class HarnessSessionRegistry:
                 self.sessions[session_id] = session
             return session
 
-    async def ensure_tools_ready(self, session_id: str, timeout_seconds: float = HIJACK_CONNECT_TIMEOUT_SECONDS) -> list[Any]:
+    async def ensure_tools_ready(
+        self,
+        session_id: str,
+        timeout_seconds: float = HIJACK_CONNECT_TIMEOUT_SECONDS,
+    ) -> list[Any]:
         return await (await self.ensure_session(session_id)).ensure_tools_ready(timeout_seconds)
+
+    async def get_initialize_instructions(
+        self,
+        session_id: str,
+        *,
+        wait_for_tools: bool,
+        timeout_seconds: float = HIJACK_CONNECT_TIMEOUT_SECONDS,
+    ) -> str | None:
+        return await (await self.ensure_session(session_id)).get_initialize_instructions(
+            wait_for_tools=wait_for_tools,
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def get_initialize_initial_request(
+        self,
+        session_id: str,
+        *,
+        wait_for_tools: bool,
+        timeout_seconds: float = HIJACK_CONNECT_TIMEOUT_SECONDS,
+    ) -> dict[str, Any] | None:
+        return await (await self.ensure_session(session_id)).get_initialize_initial_request(
+            wait_for_tools=wait_for_tools,
+            timeout_seconds=timeout_seconds,
+        )
 
     async def call_tool(self, session_id: str, name: str, arguments: dict[str, Any]) -> Any:
         return await (await self.ensure_session(session_id)).call_tool(name, arguments)
 
-    async def on_hijack_request(self, session_id: str, *, adapter_name: str, request: HijackRequest) -> ActiveHijackRequest:
+    async def on_hijack_request(
+        self,
+        session_id: str,
+        *,
+        adapter_name: str,
+        request: HijackRequest,
+    ) -> ActiveHijackRequest:
         return await (await self.ensure_session(session_id)).on_hijack_request(adapter_name=adapter_name, request=request)
 
     async def release_hijack_request(self, session_id: str, active_request: ActiveHijackRequest) -> None:
@@ -356,3 +432,9 @@ class HarnessSessionRegistry:
             session = self.sessions.get(session_id)
         if session is not None:
             await session.release_hijack_request(active_request)
+
+
+def _tagged_block(tag_prefix: str, name: str, text: str | None) -> str | None:
+    if not text:
+        return None
+    return f"<{tag_prefix}_{name}>\n{text}\n</{tag_prefix}_{name}>"

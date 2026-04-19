@@ -3,6 +3,7 @@ import json
 from harness_to_mcp.adapters import (
     MAX_TEXT_LENGTH,
     AnthropicMessagesAdapter,
+    OpenAIChatAdapter,
     OpenAIResponsesAdapter,
     ToolCallSpec,
     TurnPayload,
@@ -28,6 +29,58 @@ def test_responses_adapter_extracts_tools_and_results() -> None:
     assert [tool.name for tool in request.tools] == ["exec_command"]
     assert request.tool_results[0].tool_call_id == "call_1"
     assert request.tool_results[0].content == "ok"
+
+
+def test_openai_chat_adapter_extracts_initial_prompts() -> None:
+    adapter = OpenAIChatAdapter()
+    request = adapter.parse_request(
+        {
+            "model": "demo-model",
+            "stream": True,
+            "tools": [{"type": "function", "name": "exec_command", "description": "Run shell", "parameters": {"type": "object"}}],
+            "messages": [
+                {"role": "system", "content": "System prompt"},
+                {"role": "user", "content": "\"Hello from opencode probe\"\n"},
+            ],
+        }
+    )
+    assert request.initial_prompts is not None
+    assert request.initial_prompts.instructions == "System prompt"
+    assert request.initial_prompts.user_prompt == "Hello from opencode probe"
+    assert request.initial_prompts.harness_context is None
+
+
+def test_responses_adapter_extracts_initial_prompts() -> None:
+    adapter = OpenAIResponsesAdapter()
+    request = adapter.parse_request(
+        {
+            "model": "demo-model",
+            "stream": True,
+            "instructions": "Base instructions",
+            "tools": [{"type": "function", "name": "exec_command", "description": "Run shell", "parameters": {"type": "object"}}],
+            "input": [
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "Developer context"}],
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "<environment_context>demo</environment_context>"}],
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Hello from codex probe"}],
+                },
+            ],
+        }
+    )
+    assert request.initial_prompts is not None
+    assert request.initial_prompts.instructions == "Base instructions"
+    assert request.initial_prompts.harness_context == "Developer context\n\n<environment_context>demo</environment_context>"
+    assert request.initial_prompts.user_prompt == "Hello from codex probe"
 
 
 def test_responses_adapter_builds_function_call_stream() -> None:
@@ -73,6 +126,34 @@ def test_anthropic_adapter_extracts_tools_and_results() -> None:
     assert [tool.name for tool in request.tools] == ["Bash"]
     assert request.tool_results[0].tool_call_id == "toolu_1"
     assert request.tool_results[0].content == "hi"
+
+
+def test_anthropic_adapter_extracts_initial_prompts() -> None:
+    adapter = AnthropicMessagesAdapter()
+    request = adapter.parse_request(
+        {
+            "model": "claude-sonnet-4-20250514",
+            "stream": True,
+            "tools": [{"name": "Bash", "description": "Run shell", "input_schema": {"type": "object"}}],
+            "system": [
+                {"type": "text", "text": "System prompt"},
+                {"type": "text", "text": "Additional instructions"},
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "<system-reminder>context</system-reminder>"},
+                        {"type": "text", "text": "<|harness_to_mcp_start|> bootstrap <|harness_to_mcp_end|>"},
+                    ],
+                }
+            ],
+        }
+    )
+    assert request.initial_prompts is not None
+    assert request.initial_prompts.instructions == "System prompt\n\nAdditional instructions"
+    assert request.initial_prompts.harness_context == "<system-reminder>context</system-reminder>"
+    assert request.initial_prompts.user_prompt is None
 
 
 def test_anthropic_adapter_builds_tool_use_json() -> None:

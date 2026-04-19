@@ -4,7 +4,7 @@ import logging
 from types import SimpleNamespace
 
 import harness_to_mcp.bridge as bridge_module
-from harness_to_mcp.adapters import HijackRequest, ToolResult
+from harness_to_mcp.adapters import HijackRequest, InitialPrompts, ToolResult
 from harness_to_mcp.bridge import ActiveHijackRequest, HarnessSessionBridge
 
 
@@ -197,3 +197,26 @@ def test_bridge_logs_harness_connect(caplog) -> None:
 
     asyncio.run(run())
     assert "Harness connected via openai_chat" in caplog.text
+
+
+def test_bridge_renders_initialize_instructions_from_initial_prompts() -> None:
+    session = HarnessSessionBridge(
+        session_id="session-1",
+        workdir="/tmp/demo",
+        base_url_root="http://127.0.0.1:9330/harness_to_mcp",
+        launchers={},
+        default_launcher_name="codex",
+    )
+    session.initial_prompts = InitialPrompts(
+        instructions="Base instructions",
+        harness_context="Developer context",
+        user_prompt="Hello from probe",
+    )
+    try:
+        assert session._render_initialize_instructions() == (
+            "Base instructions\n\n"
+            "<codex_harness_context>\nDeveloper context\n</codex_harness_context>\n\n"
+            "<codex_initial_user_prompt>\nHello from probe\n</codex_initial_user_prompt>"
+        )
+    finally:
+        asyncio.run(session.close())

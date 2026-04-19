@@ -19,6 +19,7 @@ import uvicorn
 from mcp import types
 from mcp.server.fastmcp.server import StreamableHTTPASGIApp
 from mcp.server.lowlevel import Server
+from mcp.server.models import InitializationOptions
 from mcp.server.streamable_http import (
     MCP_SESSION_ID_HEADER,
     Request,
@@ -141,6 +142,12 @@ class HarnessSessionManager(StreamableHTTPSessionManager):
                 retry_interval=self.retry_interval,
             )
             self._server_instances[session_id] = transport
+            initialization_options = await _session_initialization_options(
+                self.app,
+                self.registry,
+                session_id,
+                wait_for_tools=not restored_session,
+            )
 
             async def run_server(*, task_status=anyio.TASK_STATUS_IGNORED) -> None:
                 async with transport.connect() as streams:
@@ -150,7 +157,7 @@ class HarnessSessionManager(StreamableHTTPSessionManager):
                         await self.app.run(
                             read_stream,
                             write_stream,
-                            self.app.create_initialization_options(),
+                            initialization_options,
                             stateless=restored_session,
                         )
                     finally:
@@ -495,6 +502,27 @@ def _build_mcp_server(registry: HarnessSessionRegistry) -> Server[Any, Any]:
         return tool_result_to_mcp_content(output)
 
     return server
+
+
+async def _session_initialization_options(
+    app: Server[Any, Any],
+    registry: HarnessSessionRegistry,
+    session_id: str,
+    *,
+    wait_for_tools: bool,
+) -> InitializationOptions:
+    base = app.create_initialization_options()
+    initial_request = await registry.get_initialize_initial_request(session_id, wait_for_tools=wait_for_tools)
+    experimental = dict(base.capabilities.experimental or {})
+    experimental["initialRequest"] = initial_request or {}
+    return InitializationOptions(
+        server_name=base.server_name,
+        server_version=base.server_version,
+        capabilities=base.capabilities.model_copy(update={"experimental": experimental}),
+        instructions=await registry.get_initialize_instructions(session_id, wait_for_tools=wait_for_tools),
+        website_url=base.website_url,
+        icons=base.icons,
+    )
 
 
 def _current_mcp_session_id(server: Server[Any, Any]) -> str:

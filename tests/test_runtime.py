@@ -59,6 +59,38 @@ def test_explicit_mcp_session_id_is_restored_after_server_restart() -> None:
     assert body["result"]["serverInfo"]["name"] == "harness_to_mcp"
 
 
+def test_initialize_response_includes_session_instructions() -> None:
+    payload = {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "test-client", "version": "0.1"},
+        },
+    }
+    app = create_app(port=19413)
+
+    async def fake_get_initialize_instructions(*args, **kwargs):
+        return "Captured harness instructions"
+
+    async def fake_get_initialize_initial_request(*args, **kwargs):
+        return {"model": "demo-model", "tools": [{"name": "read"}]}
+
+    app.state.harness_to_mcp.registry.get_initialize_instructions = fake_get_initialize_instructions
+    app.state.harness_to_mcp.registry.get_initialize_initial_request = fake_get_initialize_initial_request
+    with TestClient(app) as client:
+        response = client.post("/mcp", json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result"]["instructions"] == "Captured harness instructions"
+    assert body["result"]["capabilities"]["experimental"]["initialRequest"] == {
+        "model": "demo-model",
+        "tools": [{"name": "read"}],
+    }
+
+
 def test_restored_mcp_session_accepts_non_initialize_request(caplog) -> None:
     initialize_payload = {
         "jsonrpc": "2.0",
