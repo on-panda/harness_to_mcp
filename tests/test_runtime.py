@@ -1,8 +1,12 @@
+import asyncio
 import json
 import logging
+import threading
 import urllib.request
 
 from harness_to_mcp import HarnessToMcp
+from harness_to_mcp.adapters import ToolCallSpec, TurnPayload
+from harness_to_mcp.bridge import ActiveHijackRequest
 from harness_to_mcp.openai_chat import HIJACK_MODEL_ID
 from harness_to_mcp.server import _enable_default_logging, _hijack_server_is_ready, _is_local_host, create_app
 from starlette.testclient import TestClient
@@ -122,6 +126,95 @@ def test_restored_mcp_session_accepts_non_initialize_request(caplog) -> None:
     assert response.status_code == 200
     assert response.json()["result"]["tools"] == []
     assert "Restored MCP session in resume mode" in caplog.text
+
+
+def test_responses_websocket_streams_tool_call_events() -> None:
+    app = create_app(port=19415)
+    captured: dict[str, object] = {}
+    released: list[str] = []
+
+    async def fake_on_hijack_request(session_id: str, *, adapter_name: str, request) -> ActiveHijackRequest:
+        captured["session_id"] = session_id
+        captured["adapter_name"] = adapter_name
+        captured["tool_names"] = [tool.name for tool in request.tools]
+        future = asyncio.get_running_loop().create_future()
+        future.set_result(
+            TurnPayload(
+                model=request.model,
+                tool_calls=[ToolCallSpec(call_id="call_1", name="exec_command", arguments={"cmd": "pwd"})],
+            )
+        )
+        return ActiveHijackRequest(model=request.model, stream=request.stream, response_future=future, created_at=0.0)
+
+    async def fake_release_hijack_request(session_id: str, active_request: ActiveHijackRequest) -> None:
+        released.append(session_id)
+
+    app.state.harness_to_mcp.registry.on_hijack_request = fake_on_hijack_request
+    app.state.harness_to_mcp.registry.release_hijack_request = fake_release_hijack_request
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/harness_to_mcp/v1/responses", headers={"session_id": "token-1"}) as websocket:
+            websocket.send_json(
+                {
+                    "type": "response.create",
+                    "model": "demo-model",
+                    "stream": True,
+                    "tools": [{"type": "function", "name": "exec_command", "description": "Run shell", "parameters": {"type": "object"}}],
+                    "input": [],
+                }
+            )
+            events = []
+            while True:
+                event = websocket.receive_json()
+                events.append(event)
+                if event["type"] == "response.completed":
+                    break
+
+    assert captured == {
+        "session_id": "token-1",
+        "adapter_name": "openai_responses",
+        "tool_names": ["exec_command"],
+    }
+    assert released == ["token-1"]
+    assert [event["type"] for event in events] == [
+        "response.created",
+        "response.in_progress",
+        "response.output_item.added",
+        "response.function_call_arguments.delta",
+        "response.function_call_arguments.done",
+        "response.output_item.done",
+        "response.completed",
+    ]
+    assert events[-1]["response"]["output"][0]["call_id"] == "call_1"
+
+
+def test_responses_websocket_releases_active_request_on_disconnect() -> None:
+    app = create_app(port=19416)
+    released = threading.Event()
+
+    async def fake_on_hijack_request(session_id: str, *, adapter_name: str, request) -> ActiveHijackRequest:
+        future = asyncio.get_running_loop().create_future()
+        return ActiveHijackRequest(model=request.model, stream=request.stream, response_future=future, created_at=0.0)
+
+    async def fake_release_hijack_request(session_id: str, active_request: ActiveHijackRequest) -> None:
+        released.set()
+
+    app.state.harness_to_mcp.registry.on_hijack_request = fake_on_hijack_request
+    app.state.harness_to_mcp.registry.release_hijack_request = fake_release_hijack_request
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/harness_to_mcp/v1/responses", headers={"session_id": "token-1"}) as websocket:
+            websocket.send_json(
+                {
+                    "type": "response.create",
+                    "model": "demo-model",
+                    "stream": True,
+                    "tools": [{"type": "function", "name": "exec_command", "description": "Run shell", "parameters": {"type": "object"}}],
+                    "input": [],
+                }
+            )
+
+    assert released.wait(1)
 
 
 def test_default_logging_is_enabled_for_package_logger() -> None:

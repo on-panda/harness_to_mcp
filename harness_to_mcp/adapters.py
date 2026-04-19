@@ -244,114 +244,13 @@ class OpenAIResponsesAdapter(ApiAdapter):
             "parallel_tool_calls": len(tool_calls) > 1,
         }
 
-    def build_stream_chunks(self, payload: TurnPayload) -> list[bytes]:
+    def build_stream_events(self, payload: TurnPayload) -> list[dict[str, Any]]:
         response_id = _response_id("resp-harness-to-mcp")
         created = int(time.time())
         tool_calls = _payload_tool_calls(payload)
         if tool_calls:
             items = [_responses_function_call_item(tool_call) for tool_call in tool_calls]
-            chunks = [
-                _encode_event(
-                    "response.created",
-                    {
-                        "type": "response.created",
-                        "response": {
-                            "id": response_id,
-                            "object": "response",
-                            "created_at": created,
-                            "status": "in_progress",
-                            "model": payload.model,
-                            "output": [],
-                        },
-                    },
-                ),
-                _encode_event(
-                    "response.in_progress",
-                    {
-                        "type": "response.in_progress",
-                        "response": {
-                            "id": response_id,
-                            "object": "response",
-                            "created_at": created,
-                            "status": "in_progress",
-                            "model": payload.model,
-                            "output": [],
-                        },
-                    },
-                ),
-            ]
-            for output_index, item in enumerate(items):
-                chunks.extend(
-                    [
-                        _encode_event(
-                            "response.output_item.added",
-                            {
-                                "type": "response.output_item.added",
-                                "response_id": response_id,
-                                "output_index": output_index,
-                                "item": {
-                                    "id": item["id"],
-                                    "type": "function_call",
-                                    "status": "in_progress",
-                                    "call_id": item["call_id"],
-                                    "name": item["name"],
-                                    "arguments": "",
-                                },
-                            },
-                        ),
-                        _encode_event(
-                            "response.function_call_arguments.delta",
-                            {
-                                "type": "response.function_call_arguments.delta",
-                                "item_id": item["id"],
-                                "output_index": output_index,
-                                "delta": item["arguments"],
-                            },
-                        ),
-                        _encode_event(
-                            "response.function_call_arguments.done",
-                            {
-                                "type": "response.function_call_arguments.done",
-                                "item_id": item["id"],
-                                "output_index": output_index,
-                                "arguments": item["arguments"],
-                            },
-                        ),
-                        _encode_event(
-                            "response.output_item.done",
-                            {
-                                "type": "response.output_item.done",
-                                "response_id": response_id,
-                                "output_index": output_index,
-                                "item": item,
-                            },
-                        ),
-                    ]
-                )
-            chunks.extend(
-                [
-                    _encode_event(
-                        "response.completed",
-                        {
-                            "type": "response.completed",
-                            "response": {
-                                "id": response_id,
-                                "object": "response",
-                                "created_at": created,
-                                "status": "completed",
-                                "model": payload.model,
-                                "output": items,
-                            },
-                        },
-                    ),
-                    b"data: [DONE]\n\n",
-                ]
-            )
-            return chunks
-        item = _responses_message_item(payload.text or "")
-        return [
-            _encode_event(
-                "response.created",
+            events = [
                 {
                     "type": "response.created",
                     "response": {
@@ -363,9 +262,6 @@ class OpenAIResponsesAdapter(ApiAdapter):
                         "output": [],
                     },
                 },
-            ),
-            _encode_event(
-                "response.in_progress",
                 {
                     "type": "response.in_progress",
                     "response": {
@@ -377,53 +273,44 @@ class OpenAIResponsesAdapter(ApiAdapter):
                         "output": [],
                     },
                 },
-            ),
-            _encode_event(
-                "response.output_item.added",
-                {
-                    "type": "response.output_item.added",
-                    "response_id": response_id,
-                    "output_index": 0,
-                    "item": {
-                        "id": item["id"],
-                        "type": "message",
-                        "status": "in_progress",
-                        "role": "assistant",
-                        "content": [],
-                    },
-                },
-            ),
-            _encode_event(
-                "response.output_text.delta",
-                {
-                    "type": "response.output_text.delta",
-                    "item_id": item["id"],
-                    "output_index": 0,
-                    "content_index": 0,
-                    "delta": payload.text or "",
-                },
-            ),
-            _encode_event(
-                "response.output_text.done",
-                {
-                    "type": "response.output_text.done",
-                    "item_id": item["id"],
-                    "output_index": 0,
-                    "content_index": 0,
-                    "text": payload.text or "",
-                },
-            ),
-            _encode_event(
-                "response.output_item.done",
-                {
-                    "type": "response.output_item.done",
-                    "response_id": response_id,
-                    "output_index": 0,
-                    "item": item,
-                },
-            ),
-            _encode_event(
-                "response.completed",
+            ]
+            for output_index, item in enumerate(items):
+                events.extend(
+                    [
+                        {
+                            "type": "response.output_item.added",
+                            "response_id": response_id,
+                            "output_index": output_index,
+                            "item": {
+                                "id": item["id"],
+                                "type": "function_call",
+                                "status": "in_progress",
+                                "call_id": item["call_id"],
+                                "name": item["name"],
+                                "arguments": "",
+                            },
+                        },
+                        {
+                            "type": "response.function_call_arguments.delta",
+                            "item_id": item["id"],
+                            "output_index": output_index,
+                            "delta": item["arguments"],
+                        },
+                        {
+                            "type": "response.function_call_arguments.done",
+                            "item_id": item["id"],
+                            "output_index": output_index,
+                            "arguments": item["arguments"],
+                        },
+                        {
+                            "type": "response.output_item.done",
+                            "response_id": response_id,
+                            "output_index": output_index,
+                            "item": item,
+                        },
+                    ]
+                )
+            events.append(
                 {
                     "type": "response.completed",
                     "response": {
@@ -432,10 +319,83 @@ class OpenAIResponsesAdapter(ApiAdapter):
                         "created_at": created,
                         "status": "completed",
                         "model": payload.model,
-                        "output": [item],
+                        "output": items,
                     },
+                }
+            )
+            return events
+        item = _responses_message_item(payload.text or "")
+        return [
+            {
+                "type": "response.created",
+                "response": {
+                    "id": response_id,
+                    "object": "response",
+                    "created_at": created,
+                    "status": "in_progress",
+                    "model": payload.model,
+                    "output": [],
                 },
-            ),
+            },
+            {
+                "type": "response.in_progress",
+                "response": {
+                    "id": response_id,
+                    "object": "response",
+                    "created_at": created,
+                    "status": "in_progress",
+                    "model": payload.model,
+                    "output": [],
+                },
+            },
+            {
+                "type": "response.output_item.added",
+                "response_id": response_id,
+                "output_index": 0,
+                "item": {
+                    "id": item["id"],
+                    "type": "message",
+                    "status": "in_progress",
+                    "role": "assistant",
+                    "content": [],
+                },
+            },
+            {
+                "type": "response.output_text.delta",
+                "item_id": item["id"],
+                "output_index": 0,
+                "content_index": 0,
+                "delta": payload.text or "",
+            },
+            {
+                "type": "response.output_text.done",
+                "item_id": item["id"],
+                "output_index": 0,
+                "content_index": 0,
+                "text": payload.text or "",
+            },
+            {
+                "type": "response.output_item.done",
+                "response_id": response_id,
+                "output_index": 0,
+                "item": item,
+            },
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": response_id,
+                    "object": "response",
+                    "created_at": created,
+                    "status": "completed",
+                    "model": payload.model,
+                    "output": [item],
+                },
+            },
+        ]
+
+    def build_stream_chunks(self, payload: TurnPayload) -> list[bytes]:
+        return [
+            *(_encode_event(event["type"], event) for event in self.build_stream_events(payload)),
             b"data: [DONE]\n\n",
         ]
 

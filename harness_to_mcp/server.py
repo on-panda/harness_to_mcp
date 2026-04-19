@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import argparse
 import contextlib
 import json
@@ -32,10 +33,19 @@ from starlette.datastructures import MutableHeaders
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import JSONResponse, StreamingResponse
-from starlette.routing import Route
+from starlette.routing import Route, WebSocketRoute
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from .__info__ import __description__, __version__
-from .adapters import HIJACK_MODEL_ID, ApiAdapter, TurnPayload, adapter_routes, build_adapters, tool_result_to_mcp_content
+from .adapters import (
+    HIJACK_MODEL_ID,
+    ApiAdapter,
+    OpenAIResponsesAdapter,
+    TurnPayload,
+    adapter_routes,
+    build_adapters,
+    tool_result_to_mcp_content,
+)
 from .bridge import HIJACK_CONNECT_TIMEOUT_SECONDS, HarnessSessionRegistry
 from .launchers import HarnessLauncher, build_launchers
 
@@ -324,6 +334,8 @@ def create_app(
     ]
     for path, adapter in adapter_routes(adapters).items():
         routes.append(Route(path, endpoint=_make_hijack_endpoint(state, adapter), methods=["POST"]))
+        if isinstance(adapter, OpenAIResponsesAdapter):
+            routes.append(WebSocketRoute(path, endpoint=_make_responses_websocket_endpoint(state, adapter)))
 
     app = Starlette(routes=routes)
     app.state.harness_to_mcp = state
@@ -464,6 +476,70 @@ def _make_hijack_endpoint(state: AppState, adapter: ApiAdapter):
         return JSONResponse(adapter.build_json_response(payload))
 
     return endpoint
+
+
+def _make_responses_websocket_endpoint(state: AppState, adapter: OpenAIResponsesAdapter):
+    async def endpoint(websocket: WebSocket):
+        session_id = adapter.session_token_from_headers(websocket.headers)
+        if not session_id:
+            await websocket.close(code=1008, reason="Missing harness session token.")
+            return
+        await websocket.accept()
+        while True:
+            try:
+                message = await websocket.receive_json()
+            except WebSocketDisconnect:
+                return
+            if message.get("type") != "response.create":
+                await websocket.close(code=1003, reason="Unsupported websocket message type.")
+                return
+            body = {key: value for key, value in message.items() if key != "type"}
+            hijack_request = adapter.parse_request(body)
+            if not adapter.request_has_tools(body):
+                for event in adapter.build_stream_events(
+                    TurnPayload(model=hijack_request.model, text=adapter.default_text_response(body))
+                ):
+                    await websocket.send_json(event)
+                continue
+            if not hijack_request.stream and hijack_request.tool_results:
+                for event in adapter.build_stream_events(TurnPayload(model=hijack_request.model, text="ok")):
+                    await websocket.send_json(event)
+                continue
+            active_request = await state.registry.on_hijack_request(
+                session_id,
+                adapter_name=adapter.name,
+                request=hijack_request,
+            )
+            try:
+                payload = await _wait_for_websocket_response_payload(websocket, active_request)
+                if payload is None:
+                    return
+            except RuntimeError as exc:
+                payload = TurnPayload(model=active_request.model, text=str(exc))
+            finally:
+                await state.registry.release_hijack_request(session_id, active_request)
+            for event in adapter.build_stream_events(payload):
+                await websocket.send_json(event)
+
+    return endpoint
+
+
+async def _wait_for_websocket_response_payload(websocket: WebSocket, active_request) -> TurnPayload | None:
+    disconnect_task = asyncio.create_task(websocket.receive())
+    done, _ = await asyncio.wait(
+        {active_request.response_future, disconnect_task},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    if active_request.response_future in done:
+        disconnect_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await disconnect_task
+        return active_request.response_future.result()
+    message = disconnect_task.result()
+    if message["type"] == "websocket.disconnect":
+        active_request.response_future.cancel()
+        return None
+    raise RuntimeError("WebSocket request was replaced before a response was ready.")
 
 
 async def _stream_hijack_response(

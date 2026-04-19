@@ -5,9 +5,9 @@
 1. MCP `initialize` creates a streamable HTTP session.
 2. In plain server mode, the server only waits for a harness request to connect through one hijack API.
 3. In helper mode, the subcommand starts a colocated server plus one harness process, and pins that harness to the first MCP session id.
-4. The harness sends a request to one hijack API:
+4. The harness sends a request to one hijack API transport:
    - OpenAI chat completions
-   - OpenAI responses
+   - OpenAI responses (`POST` or `WebSocket`)
    - Anthropic messages
 5. The hijack API extracts the tool list from that request and exposes it through MCP `tools/list`.
 6. MCP `tools/call` resolves the waiting hijack request with a tool call payload for the matching wire API.

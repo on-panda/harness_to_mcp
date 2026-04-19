@@ -65,7 +65,7 @@ harness_to_mcp
 | ----------------------- | ------------------------------------------------------------ |
 | MCP                     | `POST /mcp`  *（等价别名：`POST /harness_to_mcp/mcp`）*      |
 | OpenAI Chat Completions | `POST /harness_to_mcp/v1/chat/completions`                   |
-| OpenAI Responses        | `POST /harness_to_mcp/v1/responses`                          |
+| OpenAI Responses        | `POST` / `WebSocket` `/harness_to_mcp/v1/responses`         |
 | Anthropic Messages      | `POST /harness_to_mcp/v1/messages`                           |
 
 #### 3. Python API
