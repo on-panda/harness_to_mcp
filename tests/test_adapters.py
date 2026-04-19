@@ -31,6 +31,11 @@ def test_responses_adapter_extracts_tools_and_results() -> None:
     assert request.tool_results[0].content == "ok"
 
 
+def test_responses_adapter_accepts_codex_session_id_header() -> None:
+    adapter = OpenAIResponsesAdapter()
+    assert adapter.session_token_from_headers({"session_id": "token-1"}) == "token-1"
+
+
 def test_openai_chat_adapter_extracts_initial_prompts() -> None:
     adapter = OpenAIChatAdapter()
     request = adapter.parse_request(
