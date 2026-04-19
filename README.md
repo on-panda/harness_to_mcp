@@ -11,8 +11,9 @@ How: `harness_to_mcp` sits between the harness and its LLM API, grabs the tool l
 - ☑ One command to expose `claude` / `codex` / `openclaw` / `opencode` as an MCP server
 - ☑ Co-locates **one MCP HTTP server** and **one hijack LLM API server** on the same port
 - ☑ Extracts the harness tool list automatically from intercepted LLM requests
+- ☑ Mirrors captured harness system prompt into MCP `initialize.result.instructions`
 - ☑ Forwards MCP `tools/call` into the harness tool loop and maps the tool result back
-- ☑ Compatible LLM API flavors:
+- ☑ Compatible LLM API protocols:
     - OpenAI Chat Completions (`openclaw`, `opencode`)
     - OpenAI Responses (`codex`)
     - Anthropic Messages (`claude`)
@@ -49,7 +50,6 @@ http://127.0.0.1:<port>/mcp
 Point any MCP client (Claude Desktop, Cursor, your own script, ...) at it and the harness's internal tools show up as standard MCP tools.
 
 You can inspect the exposed tools with `python examples/list_tools.py`.
-The MCP `initialize` response also mirrors the captured harness bootstrap prompts in `initialize.result.instructions`.
 
 #### 2. Only run the server (plug in any harness)
 

@@ -11,6 +11,7 @@
 - ☑ 一条命令就能把 `claude` / `codex` / `openclaw` / `opencode` 暴露为 MCP server
 - ☑ 同一个端口上同时跑 **一个 MCP HTTP server** 和 **一个劫持 LLM API server**
 - ☑ 自动从被拦截的 LLM 请求里提取 harness 的 tool 列表
+- ☑ 把捕获到的 harness system prompt 透传到 MCP `initialize.result.instructions`
 - ☑ 把 MCP `tools/call` 转发进 harness 的 tool loop，再把 tool result 映射回 MCP
 - ☑ 兼容的 LLM API 协议：
     - OpenAI Chat Completions（`openclaw`、`opencode`）
@@ -49,7 +50,6 @@ http://127.0.0.1:<port>/mcp
 把任意 MCP 客户端（Claude Desktop、Cursor、自写脚本……）指过去，该 harness 的内部 tools 就会作为标准 MCP tools 出现。
 
 也可以用 `python examples/list_tools.py` 查看当前暴露出来的 tools。
-MCP `initialize` 的响应里也会把捕获到的 harness 启动 prompts 透传到 `initialize.result.instructions`。
 
 #### 2. 只启动中转服务（可接入任意 harness）
 
