@@ -250,6 +250,7 @@ class OpenAIResponsesAdapter(ApiAdapter):
         tool_calls = _payload_tool_calls(payload)
         if tool_calls:
             items = [_responses_function_call_item(tool_call) for tool_call in tool_calls]
+            parallel_tool_calls = len(tool_calls) > 1
             events = [
                 {
                     "type": "response.created",
@@ -260,6 +261,7 @@ class OpenAIResponsesAdapter(ApiAdapter):
                         "status": "in_progress",
                         "model": payload.model,
                         "output": [],
+                        "parallel_tool_calls": parallel_tool_calls,
                     },
                 },
                 {
@@ -271,6 +273,7 @@ class OpenAIResponsesAdapter(ApiAdapter):
                         "status": "in_progress",
                         "model": payload.model,
                         "output": [],
+                        "parallel_tool_calls": parallel_tool_calls,
                     },
                 },
             ]
@@ -292,14 +295,18 @@ class OpenAIResponsesAdapter(ApiAdapter):
                         },
                         {
                             "type": "response.function_call_arguments.delta",
+                            "response_id": response_id,
                             "item_id": item["id"],
                             "output_index": output_index,
                             "delta": item["arguments"],
                         },
                         {
                             "type": "response.function_call_arguments.done",
+                            "response_id": response_id,
                             "item_id": item["id"],
                             "output_index": output_index,
+                            "call_id": item["call_id"],
+                            "name": item["name"],
                             "arguments": item["arguments"],
                         },
                         {
@@ -320,12 +327,14 @@ class OpenAIResponsesAdapter(ApiAdapter):
                         "status": "completed",
                         "model": payload.model,
                         "output": items,
+                        "output_text": "",
+                        "parallel_tool_calls": parallel_tool_calls,
                     },
                 }
             )
-            return events
+            return _with_sequence_numbers(events)
         item = _responses_message_item(payload.text or "")
-        return [
+        return _with_sequence_numbers([
             {
                 "type": "response.created",
                 "response": {
@@ -335,6 +344,7 @@ class OpenAIResponsesAdapter(ApiAdapter):
                     "status": "in_progress",
                     "model": payload.model,
                     "output": [],
+                    "parallel_tool_calls": False,
                 },
             },
             {
@@ -346,6 +356,7 @@ class OpenAIResponsesAdapter(ApiAdapter):
                     "status": "in_progress",
                     "model": payload.model,
                     "output": [],
+                    "parallel_tool_calls": False,
                 },
             },
             {
@@ -362,6 +373,7 @@ class OpenAIResponsesAdapter(ApiAdapter):
             },
             {
                 "type": "response.output_text.delta",
+                "response_id": response_id,
                 "item_id": item["id"],
                 "output_index": 0,
                 "content_index": 0,
@@ -369,6 +381,7 @@ class OpenAIResponsesAdapter(ApiAdapter):
             },
             {
                 "type": "response.output_text.done",
+                "response_id": response_id,
                 "item_id": item["id"],
                 "output_index": 0,
                 "content_index": 0,
@@ -389,9 +402,11 @@ class OpenAIResponsesAdapter(ApiAdapter):
                     "status": "completed",
                     "model": payload.model,
                     "output": [item],
+                    "output_text": payload.text or "",
+                    "parallel_tool_calls": False,
                 },
             },
-        ]
+        ])
 
     def build_stream_chunks(self, payload: TurnPayload) -> list[bytes]:
         return [
@@ -752,6 +767,13 @@ def _responses_function_call_item(tool_call: ToolCallSpec) -> dict[str, Any]:
         "name": tool_call.name,
         "arguments": _compact_json(tool_call.arguments),
     }
+
+
+def _with_sequence_numbers(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for index, event in enumerate(events, start=1):
+        event["event_id"] = _response_id("event-harness-to-mcp")
+        event["sequence_number"] = index
+    return events
 
 
 def _openai_chat_tool_call_message(tool_call: ToolCallSpec) -> dict[str, Any]:

@@ -45,6 +45,7 @@ class HarnessSessionBridge:
         self.workdir = workdir
         self.base_url_root = base_url_root.rstrip("/")
         self.launchers = launchers
+        self.helper_launcher_name = default_launcher_name
         self.launcher_name = default_launcher_name
         self.lock = anyio.Lock()
         self.process: subprocess.Popen[str] | None = None
@@ -62,7 +63,7 @@ class HarnessSessionBridge:
         self._tools_ready = anyio.Event()
         self._active_request_ready = anyio.Event()
         self.external_harness_wait_deadline = (
-            time.monotonic() + INITIAL_EXTERNAL_HARNESS_WAIT_SECONDS if default_launcher_name else 0.0
+            time.monotonic() + INITIAL_EXTERNAL_HARNESS_WAIT_SECONDS if self.helper_launcher_name else 0.0
         )
 
     async def on_initialize(self) -> None:
@@ -101,14 +102,14 @@ class HarnessSessionBridge:
 
     async def get_initialize_instructions(self, *, wait_for_tools: bool, timeout_seconds: float) -> str | None:
         instructions = self._render_initialize_instructions()
-        if instructions is not None or not wait_for_tools or self.launcher_name is None:
+        if instructions is not None or not wait_for_tools:
             return instructions
         await self.ensure_tools_ready(timeout_seconds)
         return self._render_initialize_instructions()
 
     async def get_initialize_initial_request(self, *, wait_for_tools: bool, timeout_seconds: float) -> dict[str, Any] | None:
         initial_request = self.initial_request
-        if initial_request is not None or not wait_for_tools or self.launcher_name is None:
+        if initial_request is not None or not wait_for_tools:
             return initial_request
         await self.ensure_tools_ready(timeout_seconds)
         return self.initial_request
@@ -172,7 +173,7 @@ class HarnessSessionBridge:
 
         started_at = time.monotonic()
         remaining_timeout = timeout_seconds
-        if self.launcher_name is not None and started_at < self.external_harness_wait_deadline:
+        if self.helper_launcher_name is not None and started_at < self.external_harness_wait_deadline:
             grace_timeout = min(remaining_timeout, self.external_harness_wait_deadline - started_at)
             event = self._active_request_ready
             with anyio.move_on_after(grace_timeout):
@@ -196,7 +197,7 @@ class HarnessSessionBridge:
         return active_request
 
     def _should_restart_harness(self, now: float) -> bool:
-        if self.launcher_name is None:
+        if self.helper_launcher_name is None:
             return False
         if self.process is None or self.process.poll() is not None:
             if now < self.external_harness_wait_deadline:
@@ -211,7 +212,7 @@ class HarnessSessionBridge:
     async def _start_harness_locked(self, restart: bool) -> None:
         if not self.mcp_open:
             return
-        if self.launcher_name is None:
+        if self.helper_launcher_name is None:
             return
         if restart:
             await self._stop_harness_locked()
@@ -225,7 +226,7 @@ class HarnessSessionBridge:
             self._tools_ready = anyio.Event()
         if self.process is not None and self.process.poll() is None:
             return
-        launcher = self.launchers[self.launcher_name]
+        launcher = self.launchers[self.helper_launcher_name]
         self.runtime, self.process = launcher.create_process(
             base_url_root=self.base_url_root,
             session_token=self.session_id,
@@ -359,12 +360,21 @@ class HarnessSessionRegistry:
         self.default_launcher_name = default_launcher_name
         self.lock = anyio.Lock()
         self.sessions: dict[str, HarnessSessionBridge] = {}
+        self.mcp_bindings: dict[str, str] = {}
+        self.latest_plain_hijack_session_id: str | None = None
+        self._plain_hijack_session_ready = anyio.Event()
 
     async def on_initialize(self, session_id: str) -> None:
+        if self.default_launcher_name is None:
+            return
         session = await self.ensure_session(session_id)
         await session.on_initialize()
 
     async def close_session(self, session_id: str) -> None:
+        if self.default_launcher_name is None:
+            async with self.lock:
+                self.mcp_bindings.pop(session_id, None)
+            return
         async with self.lock:
             session = self.sessions.pop(session_id, None)
         if session is not None:
@@ -374,14 +384,7 @@ class HarnessSessionRegistry:
         async with self.lock:
             session = self.sessions.get(session_id)
             if session is None:
-                session = HarnessSessionBridge(
-                    session_id=session_id,
-                    workdir=self.workdir,
-                    base_url_root=self.base_url_root,
-                    launchers=self.launchers,
-                    default_launcher_name=self.default_launcher_name,
-                )
-                self.sessions[session_id] = session
+                session = self._new_session_locked(session_id)
             return session
 
     async def ensure_tools_ready(
@@ -389,7 +392,12 @@ class HarnessSessionRegistry:
         session_id: str,
         timeout_seconds: float = HIJACK_CONNECT_TIMEOUT_SECONDS,
     ) -> list[Any]:
-        return await (await self.ensure_session(session_id)).ensure_tools_ready(timeout_seconds)
+        started_at = time.monotonic()
+        session = await self._resolve_mcp_session(session_id, bind_timeout_seconds=timeout_seconds)
+        if session is None:
+            raise RuntimeError("Hijack API did not connect to harness within 30 seconds.")
+        remaining = max(0.1, timeout_seconds - (time.monotonic() - started_at))
+        return await session.ensure_tools_ready(remaining)
 
     async def get_initialize_instructions(
         self,
@@ -398,7 +406,13 @@ class HarnessSessionRegistry:
         wait_for_tools: bool,
         timeout_seconds: float = HIJACK_CONNECT_TIMEOUT_SECONDS,
     ) -> str | None:
-        return await (await self.ensure_session(session_id)).get_initialize_instructions(
+        session = await self._resolve_mcp_session(
+            session_id,
+            bind_timeout_seconds=self._initialize_bind_timeout_seconds(timeout_seconds),
+        )
+        if session is None:
+            return None
+        return await session.get_initialize_instructions(
             wait_for_tools=wait_for_tools,
             timeout_seconds=timeout_seconds,
         )
@@ -410,13 +424,22 @@ class HarnessSessionRegistry:
         wait_for_tools: bool,
         timeout_seconds: float = HIJACK_CONNECT_TIMEOUT_SECONDS,
     ) -> dict[str, Any] | None:
-        return await (await self.ensure_session(session_id)).get_initialize_initial_request(
+        session = await self._resolve_mcp_session(
+            session_id,
+            bind_timeout_seconds=self._initialize_bind_timeout_seconds(timeout_seconds),
+        )
+        if session is None:
+            return None
+        return await session.get_initialize_initial_request(
             wait_for_tools=wait_for_tools,
             timeout_seconds=timeout_seconds,
         )
 
     async def call_tool(self, session_id: str, name: str, arguments: dict[str, Any]) -> Any:
-        return await (await self.ensure_session(session_id)).call_tool(name, arguments)
+        session = await self._resolve_mcp_session(session_id, bind_timeout_seconds=HIJACK_CONNECT_TIMEOUT_SECONDS)
+        if session is None:
+            raise RuntimeError("Hijack API did not connect to harness within 30 seconds.")
+        return await session.call_tool(name, arguments)
 
     async def on_hijack_request(
         self,
@@ -425,13 +448,83 @@ class HarnessSessionRegistry:
         adapter_name: str,
         request: HijackRequest,
     ) -> ActiveHijackRequest:
-        return await (await self.ensure_session(session_id)).on_hijack_request(adapter_name=adapter_name, request=request)
+        session = await self.ensure_session(session_id)
+        active_request = await session.on_hijack_request(
+            adapter_name=adapter_name,
+            request=request,
+        )
+        if self.default_launcher_name is None:
+            async with self.lock:
+                self.latest_plain_hijack_session_id = session_id
+                self._plain_hijack_session_ready.set()
+        return active_request
 
     async def release_hijack_request(self, session_id: str, active_request: ActiveHijackRequest) -> None:
         async with self.lock:
             session = self.sessions.get(session_id)
         if session is not None:
             await session.release_hijack_request(active_request)
+
+    def _new_session_locked(self, session_id: str) -> HarnessSessionBridge:
+        session = HarnessSessionBridge(
+            session_id=session_id,
+            workdir=self.workdir,
+            base_url_root=self.base_url_root,
+            launchers=self.launchers,
+            default_launcher_name=self.default_launcher_name,
+        )
+        self.sessions[session_id] = session
+        return session
+
+    async def _resolve_mcp_session(
+        self,
+        session_id: str,
+        *,
+        bind_timeout_seconds: float,
+    ) -> HarnessSessionBridge | None:
+        if self.default_launcher_name is not None:
+            return await self.ensure_session(session_id)
+        async with self.lock:
+            session = self._bind_mcp_session_locked(session_id)
+            event = self._plain_hijack_session_ready
+        if session is not None or bind_timeout_seconds <= 0:
+            return session
+        with anyio.move_on_after(bind_timeout_seconds):
+            await event.wait()
+        async with self.lock:
+            return self._bind_mcp_session_locked(session_id)
+
+    def _bind_mcp_session_locked(self, session_id: str) -> HarnessSessionBridge | None:
+        harness_session_id = self.mcp_bindings.get(session_id)
+        if harness_session_id is not None:
+            session = self.sessions.get(harness_session_id)
+            if session is not None:
+                return session
+            self.mcp_bindings.pop(session_id, None)
+        if self.latest_plain_hijack_session_id is None:
+            return None
+        session = self.sessions.get(self.latest_plain_hijack_session_id)
+        if session is None:
+            self.latest_plain_hijack_session_id = None
+            return None
+        self.mcp_bindings[session_id] = self.latest_plain_hijack_session_id
+        return session
+
+    def _initialize_bind_timeout_seconds(self, timeout_seconds: float) -> float:
+        if self.default_launcher_name is not None:
+            return timeout_seconds
+        return min(timeout_seconds, INITIAL_EXTERNAL_HARNESS_WAIT_SECONDS)
+
+    async def close(self) -> None:
+        async with self.lock:
+            sessions = list(self.sessions.values())
+            self.sessions.clear()
+            self.mcp_bindings.clear()
+            self.latest_plain_hijack_session_id = None
+            self._plain_hijack_session_ready = anyio.Event()
+        for session in sessions:
+            await session.close()
+        return None
 
 
 def _tagged_block(tag_prefix: str, name: str, text: str | None) -> str | None:

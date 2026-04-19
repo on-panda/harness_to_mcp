@@ -351,7 +351,10 @@ def create_app(
     @contextlib.asynccontextmanager
     async def lifespan(_: Starlette):
         async with session_manager.run():
-            yield
+            try:
+                yield
+            finally:
+                await registry.close()
 
     app.router.lifespan_context = lifespan
     return app

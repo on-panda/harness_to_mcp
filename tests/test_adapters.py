@@ -94,6 +94,9 @@ def test_responses_adapter_builds_function_call_stream() -> None:
         model="demo-model",
         tool_calls=[ToolCallSpec(call_id="call_1", name="exec_command", arguments={"cmd": "printf hi"})],
     )
+    events = adapter.build_stream_events(payload)
+    assert [event["sequence_number"] for event in events] == list(range(1, len(events) + 1))
+    assert next(event for event in events if event["type"] == "response.function_call_arguments.done")["name"] == "exec_command"
     chunks = adapter.build_stream_chunks(payload)
     assert chunks[-1] == b"data: [DONE]\n\n"
     combined = b"".join(chunks).decode("utf-8")

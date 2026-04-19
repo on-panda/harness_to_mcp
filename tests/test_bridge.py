@@ -1,11 +1,15 @@
 import asyncio
 import contextlib
 import logging
+import time
 from types import SimpleNamespace
 
+import anyio
 import harness_to_mcp.bridge as bridge_module
+from mcp import types
 from harness_to_mcp.adapters import HijackRequest, InitialPrompts, ToolResult
-from harness_to_mcp.bridge import ActiveHijackRequest, HarnessSessionBridge
+from harness_to_mcp.bridge import ActiveHijackRequest, HarnessSessionBridge, HarnessSessionRegistry
+from harness_to_mcp.launchers import build_launchers
 
 
 def test_bridge_call_tool_uses_chat_safe_call_id() -> None:
@@ -220,3 +224,137 @@ def test_bridge_renders_initialize_instructions_from_initial_prompts() -> None:
         )
     finally:
         asyncio.run(session.close())
+
+
+def test_plain_mode_mcp_session_adopts_existing_hijack_session() -> None:
+    async def run() -> None:
+        registry = HarnessSessionRegistry(
+            workdir="/tmp/demo",
+            base_url_root="http://127.0.0.1:9330/harness_to_mcp",
+            launchers=build_launchers(),
+            default_launcher_name=None,
+        )
+        active_request = await registry.on_hijack_request(
+            "external-1",
+            adapter_name="openai_responses",
+            request=HijackRequest(
+                model="demo-model",
+                stream=True,
+                tools=[types.Tool(name="ping", description="Run ping", inputSchema={"type": "object"})],
+                tool_results=[],
+                initial_prompts=InitialPrompts(
+                    instructions="Base instructions",
+                    harness_context="Developer context",
+                    user_prompt="Run ping",
+                ),
+                initial_request={"model": "demo-model", "tools": [{"name": "ping"}]},
+            ),
+        )
+        try:
+            instructions = await registry.get_initialize_instructions("mcp-1", wait_for_tools=True, timeout_seconds=0.1)
+            initial_request = await registry.get_initialize_initial_request("mcp-1", wait_for_tools=True, timeout_seconds=0.1)
+            tools = await registry.ensure_tools_ready("mcp-1", timeout_seconds=0.1)
+            assert instructions == (
+                "Base instructions\n\n"
+                "<codex_harness_context>\nDeveloper context\n</codex_harness_context>\n\n"
+                "<codex_initial_user_prompt>\nRun ping\n</codex_initial_user_prompt>"
+            )
+            assert initial_request == {"model": "demo-model", "tools": [{"name": "ping"}]}
+            assert [tool.name for tool in tools] == ["ping"]
+        finally:
+            await registry.close_session("mcp-1")
+            await registry.close()
+            with contextlib.suppress(RuntimeError):
+                await active_request.response_future
+
+    asyncio.run(run())
+
+
+def test_plain_mode_hijack_session_adopts_existing_mcp_session() -> None:
+    async def run() -> None:
+        registry = HarnessSessionRegistry(
+            workdir="/tmp/demo",
+            base_url_root="http://127.0.0.1:9330/harness_to_mcp",
+            launchers=build_launchers(),
+            default_launcher_name=None,
+        )
+        wait_task = asyncio.create_task(registry.ensure_tools_ready("mcp-1", timeout_seconds=1))
+        await anyio.sleep(0)
+        active_request = await registry.on_hijack_request(
+            "external-1",
+            adapter_name="openai_responses",
+            request=HijackRequest(
+                model="demo-model",
+                stream=True,
+                tools=[types.Tool(name="ping", description="Run ping", inputSchema={"type": "object"})],
+                tool_results=[],
+                initial_prompts=InitialPrompts(instructions="Base instructions"),
+                initial_request={"model": "demo-model", "tools": [{"name": "ping"}]},
+            ),
+        )
+        try:
+            tools = await wait_task
+            assert [tool.name for tool in tools] == ["ping"]
+        finally:
+            await registry.close_session("mcp-1")
+            await registry.close()
+            with contextlib.suppress(RuntimeError):
+                await active_request.response_future
+
+    asyncio.run(run())
+
+
+def test_plain_mode_close_session_only_unbinds_mcp_session() -> None:
+    async def run() -> None:
+        registry = HarnessSessionRegistry(
+            workdir="/tmp/demo",
+            base_url_root="http://127.0.0.1:9330/harness_to_mcp",
+            launchers=build_launchers(),
+            default_launcher_name=None,
+        )
+        active_request = await registry.on_hijack_request(
+            "external-1",
+            adapter_name="openai_responses",
+            request=HijackRequest(
+                model="demo-model",
+                stream=True,
+                tools=[types.Tool(name="ping", description="Run ping", inputSchema={"type": "object"})],
+                tool_results=[],
+                initial_prompts=InitialPrompts(instructions="Base instructions"),
+                initial_request={"model": "demo-model", "tools": [{"name": "ping"}]},
+            ),
+        )
+        try:
+            assert [tool.name for tool in await registry.ensure_tools_ready("mcp-1", timeout_seconds=0.1)] == ["ping"]
+            await registry.close_session("mcp-1")
+            assert [tool.name for tool in await registry.ensure_tools_ready("mcp-2", timeout_seconds=0.1)] == ["ping"]
+        finally:
+            await registry.close()
+            with contextlib.suppress(RuntimeError):
+                await active_request.response_future
+
+    asyncio.run(run())
+
+
+def test_plain_mode_does_not_restart_inferred_helper_launcher() -> None:
+    async def run() -> None:
+        session = HarnessSessionBridge(
+            session_id="external-1",
+            workdir="/tmp/demo",
+            base_url_root="http://127.0.0.1:9330/harness_to_mcp",
+            launchers=build_launchers(),
+            default_launcher_name=None,
+        )
+        active_request = await session.on_hijack_request(
+            adapter_name="openai_responses",
+            request=HijackRequest(model="demo-model", stream=True, tools=[], tool_results=[]),
+        )
+        try:
+            assert session.launcher_name == "codex"
+            assert session._should_restart_harness(time.monotonic() + 10) is False
+        finally:
+            await session.close()
+            with contextlib.suppress(RuntimeError):
+                await active_request.response_future
+
+    asyncio.run(run())
