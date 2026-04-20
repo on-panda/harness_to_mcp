@@ -212,7 +212,7 @@ class OpenAIResponsesAdapter(ApiAdapter):
     route_path = "/harness_to_mcp/v1/responses"
 
     def session_token_from_headers(self, headers: Any) -> str | None:
-        return headers.get("session_id") or _extract_bearer_token(headers.get("authorization"))
+        return _extract_bearer_token(headers.get("authorization")) or headers.get("session_id")
 
     def parse_request(self, body: dict[str, Any]) -> HijackRequest:
         return HijackRequest(

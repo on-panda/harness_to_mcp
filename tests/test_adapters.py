@@ -36,6 +36,19 @@ def test_responses_adapter_accepts_codex_session_id_header() -> None:
     assert adapter.session_token_from_headers({"session_id": "token-1"}) == "token-1"
 
 
+def test_responses_adapter_prefers_auth_header_over_codex_session_id() -> None:
+    adapter = OpenAIResponsesAdapter()
+    assert (
+        adapter.session_token_from_headers(
+            {
+                "session_id": "codex-thread-1",
+                "authorization": "Bearer token-1",
+            }
+        )
+        == "token-1"
+    )
+
+
 def test_openai_chat_adapter_extracts_initial_prompts() -> None:
     adapter = OpenAIChatAdapter()
     request = adapter.parse_request(
