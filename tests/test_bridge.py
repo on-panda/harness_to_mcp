@@ -7,9 +7,45 @@ from types import SimpleNamespace
 import anyio
 import harness_to_mcp.bridge as bridge_module
 from mcp import types
-from harness_to_mcp.adapters import HijackRequest, InitialPrompts, ToolResult
+from harness_to_mcp.adapters import HijackRequest, InitialPrompts, ToolCallSpec, ToolResult
 from harness_to_mcp.bridge import ActiveHijackRequest, HarnessSessionBridge, HarnessSessionRegistry
 from harness_to_mcp.launchers import build_launchers
+
+
+class _FakeRuntime:
+    def cleanup(self) -> None:
+        return None
+
+
+class _FakeProcess:
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = 0
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.returncode = 0
+        return 0
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+
+class _FakeLauncher:
+    name = "codex"
+    adapter_name = "openai_responses"
+
+    def __init__(self) -> None:
+        self.starts = 0
+
+    def create_process(self, *, base_url_root: str, session_token: str, prompt: str, workdir: str):
+        self.starts += 1
+        return _FakeRuntime(), _FakeProcess(pid=100 + self.starts)
 
 
 def test_bridge_call_tool_uses_chat_safe_call_id() -> None:
@@ -224,6 +260,94 @@ def test_bridge_renders_initialize_instructions_from_initial_prompts() -> None:
         )
     finally:
         asyncio.run(session.close())
+
+
+def test_helper_restart_keeps_queued_tool_call_until_harness_reconnects() -> None:
+    async def run() -> None:
+        launcher = _FakeLauncher()
+        session = HarnessSessionBridge(
+            session_id="session-1",
+            workdir="/tmp/demo",
+            base_url_root="http://127.0.0.1:9330/harness_to_mcp",
+            launchers={"codex": launcher},
+            default_launcher_name="codex",
+        )
+        session.process = _FakeProcess(pid=1)
+        session.runtime = _FakeRuntime()
+        session.external_harness_wait_deadline = 0.0
+        session.last_harness_activity_at = time.monotonic() - bridge_module.ACTIVE_REQUEST_GRACE_SECONDS - 1
+        original_uuid4 = bridge_module.uuid4
+        bridge_module.uuid4 = lambda: SimpleNamespace(hex="abc123")
+        next_request = None
+        try:
+            task = asyncio.create_task(session.call_tool("read", {"path": "README.md"}))
+            deadline = time.monotonic() + 1
+            while launcher.starts == 0:
+                assert time.monotonic() < deadline
+                await anyio.sleep(0.01)
+            assert task.done() is False
+            active_request = await session.on_hijack_request(
+                adapter_name="openai_responses",
+                request=HijackRequest(model="demo-model", stream=True, tools=[], tool_results=[]),
+            )
+            payload = await active_request.response_future
+            assert payload.tool_calls is not None
+            assert [(tool_call.call_id, tool_call.name, tool_call.arguments) for tool_call in payload.tool_calls] == [
+                ("callabc123", "read", {"path": "README.md"})
+            ]
+            next_request = await session.on_hijack_request(
+                adapter_name="openai_responses",
+                request=HijackRequest(
+                    model="demo-model",
+                    stream=True,
+                    tools=[],
+                    tool_results=[ToolResult(tool_call_id="callabc123", content="ok")],
+                ),
+            )
+            assert await task == "ok"
+        finally:
+            bridge_module.uuid4 = original_uuid4
+            await session.close()
+            if next_request is not None:
+                with contextlib.suppress(RuntimeError):
+                    await next_request.response_future
+
+    asyncio.run(run())
+
+
+def test_helper_restart_only_fails_inflight_tool_results() -> None:
+    async def run() -> None:
+        launcher = _FakeLauncher()
+        session = HarnessSessionBridge(
+            session_id="session-1",
+            workdir="/tmp/demo",
+            base_url_root="http://127.0.0.1:9330/harness_to_mcp",
+            launchers={"codex": launcher},
+            default_launcher_name="codex",
+        )
+        session.process = _FakeProcess(pid=1)
+        session.runtime = _FakeRuntime()
+        loop = asyncio.get_running_loop()
+        inflight_future = loop.create_future()
+        queued_future = loop.create_future()
+        session.inflight_tool_call_ids = {"call-inflight"}
+        session.pending_tool_results = {
+            "call-inflight": inflight_future,
+            "call-queued": queued_future,
+        }
+        session.pending_tool_calls = [
+            ToolCallSpec(call_id="call-queued", name="read", arguments={"path": "README.md"})
+        ]
+        try:
+            await session._start_harness_locked(restart=True)
+            assert str(inflight_future.exception()) == "Harness restarted before tool result arrived."
+            assert queued_future.done() is False
+            assert [tool_call.call_id for tool_call in session.pending_tool_calls] == ["call-queued"]
+            assert set(session.pending_tool_results) == {"call-queued"}
+        finally:
+            await session.close()
+
+    asyncio.run(run())
 
 
 def test_plain_mode_mcp_session_adopts_existing_hijack_session() -> None:

@@ -216,9 +216,12 @@ class HarnessSessionBridge:
             return
         if restart:
             await self._stop_harness_locked()
-            self.pending_tool_calls = []
+            inflight_tool_call_ids = self.inflight_tool_call_ids
             self.inflight_tool_call_ids = set()
-            self._fail_pending_locked(RuntimeError("Harness restarted before tool result arrived."))
+            for tool_call_id in inflight_tool_call_ids:
+                result_future = self.pending_tool_results.pop(tool_call_id, None)
+                if result_future is not None and not result_future.done():
+                    result_future.set_exception(RuntimeError("Harness restarted before tool result arrived."))
             self._clear_active_request_locked(RuntimeError("Harness restarted."))
             self.tools = []
             self.initial_prompts = None
