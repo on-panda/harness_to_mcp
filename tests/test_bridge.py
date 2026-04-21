@@ -377,6 +377,7 @@ def test_plain_mode_mcp_session_adopts_existing_hijack_session() -> None:
         try:
             instructions = await registry.get_initialize_instructions("mcp-1", wait_for_tools=True, timeout_seconds=0.1)
             initial_request = await registry.get_initialize_initial_request("mcp-1", wait_for_tools=True, timeout_seconds=0.1)
+            harness_name = await registry.get_initialize_harness_name("mcp-1", wait_for_tools=True, timeout_seconds=0.1)
             tools = await registry.ensure_tools_ready("mcp-1", timeout_seconds=0.1)
             assert instructions == (
                 "Base instructions\n\n"
@@ -384,6 +385,7 @@ def test_plain_mode_mcp_session_adopts_existing_hijack_session() -> None:
                 "<codex_initial_user_prompt>\nRun ping\n</codex_initial_user_prompt>"
             )
             assert initial_request == {"model": "demo-model", "tools": [{"name": "ping"}]}
+            assert harness_name == "codex"
             assert [tool.name for tool in tools] == ["ping"]
         finally:
             await registry.close_session("mcp-1")

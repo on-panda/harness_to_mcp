@@ -114,6 +114,13 @@ class HarnessSessionBridge:
         await self.ensure_tools_ready(timeout_seconds)
         return self.initial_request
 
+    async def get_initialize_harness_name(self, *, wait_for_tools: bool, timeout_seconds: float) -> str | None:
+        harness_name = self.launcher_name
+        if harness_name is not None or not wait_for_tools:
+            return harness_name
+        await self.ensure_tools_ready(timeout_seconds)
+        return self.launcher_name
+
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         loop = asyncio.get_running_loop()
         call_id = f"call{uuid4().hex}"
@@ -409,9 +416,10 @@ class HarnessSessionRegistry:
         wait_for_tools: bool,
         timeout_seconds: float = HIJACK_CONNECT_TIMEOUT_SECONDS,
     ) -> str | None:
+        bind_timeout_seconds = self._initialize_bind_timeout_seconds(timeout_seconds) if wait_for_tools else 0.0
         session = await self._resolve_mcp_session(
             session_id,
-            bind_timeout_seconds=self._initialize_bind_timeout_seconds(timeout_seconds),
+            bind_timeout_seconds=bind_timeout_seconds,
         )
         if session is None:
             return None
@@ -427,13 +435,33 @@ class HarnessSessionRegistry:
         wait_for_tools: bool,
         timeout_seconds: float = HIJACK_CONNECT_TIMEOUT_SECONDS,
     ) -> dict[str, Any] | None:
+        bind_timeout_seconds = self._initialize_bind_timeout_seconds(timeout_seconds) if wait_for_tools else 0.0
         session = await self._resolve_mcp_session(
             session_id,
-            bind_timeout_seconds=self._initialize_bind_timeout_seconds(timeout_seconds),
+            bind_timeout_seconds=bind_timeout_seconds,
         )
         if session is None:
             return None
         return await session.get_initialize_initial_request(
+            wait_for_tools=wait_for_tools,
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def get_initialize_harness_name(
+        self,
+        session_id: str,
+        *,
+        wait_for_tools: bool,
+        timeout_seconds: float = HIJACK_CONNECT_TIMEOUT_SECONDS,
+    ) -> str | None:
+        bind_timeout_seconds = self._initialize_bind_timeout_seconds(timeout_seconds) if wait_for_tools else 0.0
+        session = await self._resolve_mcp_session(
+            session_id,
+            bind_timeout_seconds=bind_timeout_seconds,
+        )
+        if session is None:
+            return None
+        return await session.get_initialize_harness_name(
             wait_for_tools=wait_for_tools,
             timeout_seconds=timeout_seconds,
         )

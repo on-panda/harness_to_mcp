@@ -592,13 +592,21 @@ async def _session_initialization_options(
 ) -> InitializationOptions:
     base = app.create_initialization_options()
     initial_request = await registry.get_initialize_initial_request(session_id, wait_for_tools=wait_for_tools)
+    harness_name = await registry.get_initialize_harness_name(session_id, wait_for_tools=False)
+    instructions = await registry.get_initialize_instructions(
+        session_id,
+        wait_for_tools=wait_for_tools and initial_request is not None,
+    )
     experimental = dict(base.capabilities.experimental or {})
-    experimental["initialRequest"] = initial_request or {}
+    harness_to_mcp = dict(experimental.get("harness_to_mcp") or {})
+    harness_to_mcp["initial_request"] = initial_request or {}
+    harness_to_mcp["harness_info"] = {"harness": harness_name} if harness_name else {}
+    experimental["harness_to_mcp"] = harness_to_mcp
     return InitializationOptions(
         server_name=base.server_name,
         server_version=base.server_version,
         capabilities=base.capabilities.model_copy(update={"experimental": experimental}),
-        instructions=await registry.get_initialize_instructions(session_id, wait_for_tools=wait_for_tools),
+        instructions=instructions,
         website_url=base.website_url,
         icons=base.icons,
     )

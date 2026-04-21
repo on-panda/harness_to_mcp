@@ -18,8 +18,10 @@
 
 - the first tool-bearing hijack request is cached as the session bootstrap request
 - `initialize.result.instructions` mirrors the captured harness bootstrap prompts after harness-specific normalization
-- `initialize.result.capabilities.experimental.initialRequest` stores the original JSON body of that first tool-bearing hijack request
+- `initialize.result.capabilities.experimental.harness_to_mcp.initial_request` stores the original JSON body of that first tool-bearing hijack request
+- `initialize.result.capabilities.experimental.harness_to_mcp.harness_info` stores harness metadata; when the harness name is known, `harness_info.harness` is set to that name
 - in helper mode, `initialize` waits for that bootstrap request; in plain server mode this field can stay empty until an external harness connects
+- in plain server mode, `harness_info` can stay empty when the connected wire protocol does not identify one harness unambiguously
 
 ## Instructions templates
 

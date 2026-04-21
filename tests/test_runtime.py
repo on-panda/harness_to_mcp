@@ -82,16 +82,23 @@ def test_initialize_response_includes_session_instructions() -> None:
     async def fake_get_initialize_initial_request(*args, **kwargs):
         return {"model": "demo-model", "tools": [{"name": "read"}]}
 
+    async def fake_get_initialize_harness_name(*args, **kwargs):
+        return "codex"
+
     app.state.harness_to_mcp.registry.get_initialize_instructions = fake_get_initialize_instructions
     app.state.harness_to_mcp.registry.get_initialize_initial_request = fake_get_initialize_initial_request
+    app.state.harness_to_mcp.registry.get_initialize_harness_name = fake_get_initialize_harness_name
     with TestClient(app) as client:
         response = client.post("/mcp", json=payload)
     assert response.status_code == 200
     body = response.json()
     assert body["result"]["instructions"] == "Captured harness instructions"
-    assert body["result"]["capabilities"]["experimental"]["initialRequest"] == {
-        "model": "demo-model",
-        "tools": [{"name": "read"}],
+    assert body["result"]["capabilities"]["experimental"]["harness_to_mcp"] == {
+        "initial_request": {
+            "model": "demo-model",
+            "tools": [{"name": "read"}],
+        },
+        "harness_info": {"harness": "codex"},
     }
 
 
