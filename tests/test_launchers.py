@@ -1,4 +1,5 @@
 import json
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,10 +19,13 @@ from harness_to_mcp.launchers import (
 def test_opencode_launcher_uses_temp_xdg_dirs() -> None:
     runtime = OpencodeLauncher().create_runtime(base_url_root="http://127.0.0.1:9330/harness_to_mcp", session_token="token-1")
     try:
+        root = Path(tempfile.gettempdir()) / "harness_to_mcp" / "opencode"
         assert runtime.env["XDG_CONFIG_HOME"]
         assert runtime.env["XDG_DATA_HOME"]
         assert runtime.env["XDG_CACHE_HOME"]
         assert runtime.env["XDG_STATE_HOME"]
+        assert Path(runtime.env["XDG_CONFIG_HOME"]) == root / "config"
+        assert runtime.log_path == root / "logs" / "opencode.log"
         assert runtime.command[:5] == ["opencode", "run", "--dangerously-skip-permissions", "--model", "harness_to_mcp/harness_to_mcp_hijack_api"]
     finally:
         runtime.cleanup()
@@ -30,8 +34,10 @@ def test_opencode_launcher_uses_temp_xdg_dirs() -> None:
 def test_codex_launcher_uses_temp_home_and_responses_provider() -> None:
     runtime = CodexLauncher().create_runtime(base_url_root="http://127.0.0.1:9330/harness_to_mcp", session_token="token-1")
     try:
+        root = Path(tempfile.gettempdir()) / "harness_to_mcp" / "codex"
         assert runtime.env[CODEX_SESSION_TOKEN_ENV] == "token-1"
-        assert runtime.env["HOME"]
+        assert Path(runtime.env["HOME"]) == root
+        assert runtime.log_path == root / "logs" / "codex.log"
         joined = " ".join(runtime.command)
         assert "--dangerously-bypass-approvals-and-sandbox" in joined
         assert "wire_api=\"responses\"" in joined
@@ -43,7 +49,9 @@ def test_codex_launcher_uses_temp_home_and_responses_provider() -> None:
 def test_claude_launcher_uses_temp_config_dir() -> None:
     runtime = ClaudeLauncher().create_runtime(base_url_root="http://127.0.0.1:9330/harness_to_mcp", session_token="token-1")
     try:
-        assert runtime.env["CLAUDE_CONFIG_DIR"]
+        root = Path(tempfile.gettempdir()) / "harness_to_mcp" / "claude"
+        assert Path(runtime.env["CLAUDE_CONFIG_DIR"]) == root / ".claude"
+        assert runtime.log_path == root / "logs" / "claude.log"
         assert runtime.env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:9330/harness_to_mcp"
         assert runtime.env["ANTHROPIC_API_KEY"] == "token-1"
         assert runtime.command[0] == "claude"
@@ -56,12 +64,15 @@ def test_claude_launcher_uses_temp_config_dir() -> None:
 def test_openclaw_launcher_uses_temp_config_and_chat_provider() -> None:
     runtime = OpenclawLauncher().create_runtime(base_url_root="http://127.0.0.1:9330/harness_to_mcp", session_token="token-1")
     try:
+        root = Path(tempfile.gettempdir()) / "harness_to_mcp" / "openclaw"
         assert runtime.env[OPENCLAW_GATEWAY_PORT_ENV]
         assert runtime.env[OPENCLAW_SESSION_TOKEN_ENV] == "token-1"
         assert runtime.env["OPENCLAW_HOME"]
         assert runtime.env["OPENCLAW_STATE_DIR"]
         assert runtime.env["OPENCLAW_CONFIG_PATH"]
         assert runtime.env["HOME"]
+        assert Path(runtime.env["OPENCLAW_CONFIG_PATH"]) == root / "openclaw.json"
+        assert runtime.log_path == root / "logs" / "openclaw.log"
         config = json.loads(Path(runtime.env["OPENCLAW_CONFIG_PATH"]).read_text(encoding="utf-8"))
         assert config["browser"]["enabled"] is True
         assert config["browser"]["extraArgs"] == ["--use-mock-keychain"]

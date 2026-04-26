@@ -77,10 +77,11 @@ class OpencodeLauncher(HarnessLauncher):
 
     def create_runtime(self, *, base_url_root: str, session_token: str | None = None, prompt: str = LAUNCH_PROMPT) -> HarnessRuntime:
         session_token = session_token or uuid.uuid4().hex
-        tempdir = tempfile.TemporaryDirectory(prefix="harness_to_mcp_opencode_")
-        temp_root = Path(tempdir.name)
+        temp_root = _harness_runtime_root(self.name)
         config_dir = temp_root / "config" / "opencode"
+        log_dir = temp_root / "logs"
         config_dir.mkdir(parents=True, exist_ok=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
         config_path = config_dir / "opencode.json"
         config_path.write_text(_opencode_config(f"{base_url_root.rstrip('/')}/v1", session_token), encoding="utf-8")
         env = os.environ.copy()
@@ -90,7 +91,7 @@ class OpencodeLauncher(HarnessLauncher):
         env["XDG_STATE_HOME"] = str(temp_root / "state")
         return HarnessRuntime(
             session_token=session_token,
-            tempdir=tempdir,
+            tempdir=None,
             env=env,
             command=[
                 "opencode",
@@ -102,7 +103,7 @@ class OpencodeLauncher(HarnessLauncher):
                 "json",
                 prompt,
             ],
-            log_path=config_dir / "opencode.log",
+            log_path=log_dir / "opencode.log",
         )
 
 
@@ -112,11 +113,12 @@ class CodexLauncher(HarnessLauncher):
 
     def create_runtime(self, *, base_url_root: str, session_token: str | None = None, prompt: str = LAUNCH_PROMPT) -> HarnessRuntime:
         session_token = session_token or uuid.uuid4().hex
-        tempdir = tempfile.TemporaryDirectory(prefix="harness_to_mcp_codex_")
-        home = Path(tempdir.name)
+        home = _harness_runtime_root(self.name)
         (home / ".codex").mkdir(parents=True, exist_ok=True)
+        log_dir = home / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
-        env["HOME"] = tempdir.name
+        env["HOME"] = str(home)
         env[CODEX_SESSION_TOKEN_ENV] = session_token
         base_url = f"{base_url_root.rstrip('/')}/v1"
         command = [
@@ -135,7 +137,7 @@ class CodexLauncher(HarnessLauncher):
             f'model_providers.harness_to_mcp={{name="HarnessToMcp",base_url="{base_url}",env_key="{CODEX_SESSION_TOKEN_ENV}",wire_api="responses"}}',
             prompt,
         ]
-        return HarnessRuntime(session_token=session_token, tempdir=tempdir, env=env, command=command)
+        return HarnessRuntime(session_token=session_token, tempdir=None, env=env, command=command, log_path=log_dir / "codex.log")
 
 
 class ClaudeLauncher(HarnessLauncher):
@@ -144,9 +146,11 @@ class ClaudeLauncher(HarnessLauncher):
 
     def create_runtime(self, *, base_url_root: str, session_token: str | None = None, prompt: str = LAUNCH_PROMPT) -> HarnessRuntime:
         session_token = session_token or uuid.uuid4().hex
-        tempdir = tempfile.TemporaryDirectory(prefix="harness_to_mcp_claude_")
-        config_dir = Path(tempdir.name) / ".claude"
+        temp_root = _harness_runtime_root(self.name)
+        config_dir = temp_root / ".claude"
+        log_dir = temp_root / "logs"
         config_dir.mkdir(parents=True, exist_ok=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
         env["CLAUDE_CONFIG_DIR"] = str(config_dir)
         env["ANTHROPIC_BASE_URL"] = base_url_root.rstrip("/")
@@ -164,7 +168,7 @@ class ClaudeLauncher(HarnessLauncher):
             DEFAULT_CLAUDE_MODEL,
             prompt,
         ]
-        return HarnessRuntime(session_token=session_token, tempdir=tempdir, env=env, command=command)
+        return HarnessRuntime(session_token=session_token, tempdir=None, env=env, command=command, log_path=log_dir / "claude.log")
 
 
 class OpenclawLauncher(HarnessLauncher):
@@ -179,10 +183,11 @@ class OpenclawLauncher(HarnessLauncher):
     def create_runtime(self, *, base_url_root: str, session_token: str | None = None, prompt: str = LAUNCH_PROMPT) -> HarnessRuntime:
         session_token = session_token or uuid.uuid4().hex
         gateway_port = _pick_unused_port()
-        tempdir = tempfile.TemporaryDirectory(prefix="harness_to_mcp_openclaw_")
-        temp_root = Path(tempdir.name)
+        temp_root = _harness_runtime_root(self.name)
         home = temp_root / "home"
+        log_dir = temp_root / "logs"
         home.mkdir(parents=True, exist_ok=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
         config_path = temp_root / "openclaw.json"
         config_path.write_text(_openclaw_config(f"{base_url_root.rstrip('/')}/v1", gateway_port), encoding="utf-8")
         env = os.environ.copy()
@@ -194,7 +199,7 @@ class OpenclawLauncher(HarnessLauncher):
         env[OPENCLAW_SESSION_TOKEN_ENV] = session_token
         return HarnessRuntime(
             session_token=session_token,
-            tempdir=tempdir,
+            tempdir=None,
             env=env,
             command=[
                 "openclaw",
@@ -206,7 +211,7 @@ class OpenclawLauncher(HarnessLauncher):
                 prompt,
                 "--json",
             ],
-            log_path=temp_root / "openclaw.log",
+            log_path=log_dir / "openclaw.log",
         )
 
     def create_process(self, *, base_url_root: str, session_token: str, prompt: str, workdir: str) -> tuple[HarnessRuntime, subprocess.Popen[str]]:
@@ -313,6 +318,12 @@ def launcher_for_adapter(launchers: dict[str, HarnessLauncher], adapter_name: st
     if len(matches) == 1:
         return matches[0]
     return None
+
+
+def _harness_runtime_root(harness: str) -> Path:
+    root = Path(tempfile.gettempdir()) / "harness_to_mcp" / harness
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def _opencode_config(base_url: str, session_token: str) -> str:

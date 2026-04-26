@@ -4,7 +4,7 @@ import json
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from mcp import types
@@ -48,6 +48,7 @@ class HijackRequest:
     tool_results: list[ToolResult]
     initial_prompts: InitialPrompts | None = None
     initial_request: dict[str, Any] | None = None
+    unsupported_tools: list[dict[str, Any]] = field(default_factory=list)
 
 
 class ApiAdapter:
@@ -90,13 +91,15 @@ class OpenAIChatAdapter(ApiAdapter):
         return _extract_bearer_token(headers.get("authorization"))
 
     def parse_request(self, body: dict[str, Any]) -> HijackRequest:
+        raw_tools = body.get("tools") or []
         return HijackRequest(
             model=body.get("model") or HIJACK_MODEL_ID,
             stream=bool(body.get("stream")),
-            tools=_extract_openai_function_tools(body.get("tools") or []),
+            tools=_extract_openai_function_tools(raw_tools),
             tool_results=_extract_chat_tool_results(body.get("messages") or []),
             initial_prompts=_extract_openai_chat_initial_prompts(body),
             initial_request=body,
+            unsupported_tools=_extract_openai_unsupported_tools(raw_tools),
         )
 
     def build_json_response(self, payload: TurnPayload) -> dict[str, Any]:
@@ -215,13 +218,15 @@ class OpenAIResponsesAdapter(ApiAdapter):
         return _extract_bearer_token(headers.get("authorization")) or headers.get("session_id")
 
     def parse_request(self, body: dict[str, Any]) -> HijackRequest:
+        raw_tools = body.get("tools") or []
         return HijackRequest(
             model=body.get("model") or HIJACK_MODEL_ID,
             stream=bool(body.get("stream")),
-            tools=_extract_openai_function_tools(body.get("tools") or []),
+            tools=_extract_openai_function_tools(raw_tools),
             tool_results=_extract_responses_tool_results(body.get("input") or []),
             initial_prompts=_extract_responses_initial_prompts(body),
             initial_request=body,
+            unsupported_tools=_extract_openai_unsupported_tools(raw_tools),
         )
 
     def build_json_response(self, payload: TurnPayload) -> dict[str, Any]:
@@ -438,13 +443,15 @@ class AnthropicMessagesAdapter(ApiAdapter):
         return _extract_bearer_token(headers.get("authorization"))
 
     def parse_request(self, body: dict[str, Any]) -> HijackRequest:
+        raw_tools = body.get("tools") or []
         return HijackRequest(
             model=body.get("model") or HIJACK_MODEL_ID,
             stream=bool(body.get("stream")),
-            tools=_extract_anthropic_tools(body.get("tools") or []),
+            tools=_extract_anthropic_tools(raw_tools),
             tool_results=_extract_anthropic_tool_results(body.get("messages") or []),
             initial_prompts=_extract_anthropic_initial_prompts(body),
             initial_request=body,
+            unsupported_tools=_extract_anthropic_unsupported_tools(raw_tools),
         )
 
     def build_json_response(self, payload: TurnPayload) -> dict[str, Any]:
@@ -688,6 +695,21 @@ def _extract_openai_function_tools(raw_tools: list[dict[str, Any]]) -> list[type
     return result
 
 
+def _extract_openai_unsupported_tools(raw_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for raw_tool in raw_tools:
+        function = raw_tool.get("function") or raw_tool
+        raw_name = function.get("name") or raw_tool.get("name")
+        tool_type = raw_tool.get("type") or "unknown"
+        if tool_type == "function" and raw_name:
+            continue
+        item = {"type": tool_type}
+        if raw_name:
+            item["name"] = raw_name
+        result.append(item)
+    return result
+
+
 def _extract_anthropic_tools(raw_tools: list[dict[str, Any]]) -> list[types.Tool]:
     result: list[types.Tool] = []
     for raw_tool in raw_tools:
@@ -697,6 +719,14 @@ def _extract_anthropic_tools(raw_tools: list[dict[str, Any]]) -> list[types.Tool
         schema = raw_tool.get("input_schema") or {"type": "object", "properties": {}}
         result.append(types.Tool(name=name, description=raw_tool.get("description") or "", inputSchema=schema))
     return result
+
+
+def _extract_anthropic_unsupported_tools(raw_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {key: raw_tool[key] for key in ("name", "type") if key in raw_tool}
+        for raw_tool in raw_tools
+        if not raw_tool.get("name")
+    ]
 
 
 def _extract_chat_tool_results(messages: list[dict[str, Any]]) -> list[ToolResult]:

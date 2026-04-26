@@ -262,6 +262,63 @@ def test_bridge_renders_initialize_instructions_from_initial_prompts() -> None:
         asyncio.run(session.close())
 
 
+def test_bridge_appends_unsupported_tools_notice_to_initialize_instructions() -> None:
+    session = HarnessSessionBridge(
+        session_id="session-1",
+        workdir="/tmp/demo",
+        base_url_root="http://127.0.0.1:9330/harness_to_mcp",
+        launchers={},
+        default_launcher_name="codex",
+    )
+    session.initial_prompts = InitialPrompts(instructions="Base instructions")
+    session.unsupported_tools = [{"type": "web_search_preview"}]
+    try:
+        instructions = session._render_initialize_instructions()
+        assert instructions == (
+            "Base instructions\n\n"
+            "<|harness_to_mcp_notice_start|>\n"
+            "This environment is powered by [harness_to_mcp](https://github.com/on-panda/harness_to_mcp), "
+            "which exposes the harness's internal tools through standard MCP. "
+            "The following tools are unavailable because they are incompatible with standard MCP:\n"
+            "web_search_preview\n"
+            "<|harness_to_mcp_notice_end|>"
+        )
+    finally:
+        asyncio.run(session.close())
+
+
+def test_bridge_marks_unsupported_only_tool_request_ready() -> None:
+    async def run() -> None:
+        session = HarnessSessionBridge(
+            session_id="session-1",
+            workdir="/tmp/demo",
+            base_url_root="http://127.0.0.1:9330/harness_to_mcp",
+            launchers={},
+            default_launcher_name="codex",
+        )
+        active_request = await session.on_hijack_request(
+            adapter_name="openai_responses",
+            request=HijackRequest(
+                model="demo-model",
+                stream=True,
+                tools=[],
+                tool_results=[],
+                initial_prompts=InitialPrompts(instructions="Base instructions"),
+                initial_request={"model": "demo-model", "tools": [{"type": "web_search_preview"}]},
+                unsupported_tools=[{"type": "web_search_preview"}],
+            ),
+        )
+        try:
+            assert await session.ensure_tools_ready(0.1) == []
+            assert session.initial_request == {"model": "demo-model", "tools": [{"type": "web_search_preview"}]}
+        finally:
+            await session.close()
+            with contextlib.suppress(RuntimeError):
+                await active_request.response_future
+
+    asyncio.run(run())
+
+
 def test_helper_restart_keeps_queued_tool_call_until_harness_reconnects() -> None:
     async def run() -> None:
         launcher = _FakeLauncher()

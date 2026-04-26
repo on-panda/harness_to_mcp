@@ -31,6 +31,22 @@ def test_responses_adapter_extracts_tools_and_results() -> None:
     assert request.tool_results[0].content == "ok"
 
 
+def test_responses_adapter_tracks_unsupported_openai_tools() -> None:
+    adapter = OpenAIResponsesAdapter()
+    request = adapter.parse_request(
+        {
+            "model": "demo-model",
+            "tools": [
+                {"type": "function", "name": "exec_command", "parameters": {"type": "object"}},
+                {"type": "web_search_preview"},
+            ],
+            "input": [],
+        }
+    )
+    assert [tool.name for tool in request.tools] == ["exec_command"]
+    assert request.unsupported_tools == [{"type": "web_search_preview"}]
+
+
 def test_responses_adapter_accepts_codex_session_id_header() -> None:
     adapter = OpenAIResponsesAdapter()
     assert adapter.session_token_from_headers({"session_id": "token-1"}) == "token-1"

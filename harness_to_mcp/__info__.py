@@ -1,4 +1,4 @@
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 __description__ = "Expose harness internal tools as an MCP HTTP server through a hijacked LLM API."
 __license__ = "MIT"
 __author__ = "DIYer22"

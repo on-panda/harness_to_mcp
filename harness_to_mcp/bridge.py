@@ -52,6 +52,7 @@ class HarnessSessionBridge:
         self.runtime: HarnessRuntime | None = None
         self.last_harness_activity_at = 0.0
         self.tools: list[Any] = []
+        self.unsupported_tools: list[dict[str, Any]] = []
         self.initial_prompts: InitialPrompts | None = None
         self.initial_request: dict[str, Any] | None = None
         self.active_request: ActiveHijackRequest | None = None
@@ -81,6 +82,7 @@ class HarnessSessionBridge:
             self._fail_pending_locked(RuntimeError("MCP session closed."))
             self._clear_active_request_locked(RuntimeError("MCP session closed."))
             self.tools = []
+            self.unsupported_tools = []
             self.initial_prompts = None
             self.initial_request = None
             self._tools_ready = anyio.Event()
@@ -155,12 +157,13 @@ class HarnessSessionBridge:
                 result_future = self.pending_tool_results.pop(tool_result.tool_call_id, None)
                 if result_future is not None and not result_future.done():
                     result_future.set_result(tool_result.content)
-            if request.tools:
+            if request.tools or request.unsupported_tools:
                 if self.initial_prompts is None:
                     self.initial_prompts = request.initial_prompts
                 if self.initial_request is None:
                     self.initial_request = request.initial_request
                 self.tools = request.tools
+                self.unsupported_tools = request.unsupported_tools
                 self._tools_ready.set()
             self._clear_active_request_locked(RuntimeError("Hijack API request replaced by a newer request."))
             self.active_request = active_request
@@ -231,6 +234,7 @@ class HarnessSessionBridge:
                     result_future.set_exception(RuntimeError("Harness restarted before tool result arrived."))
             self._clear_active_request_locked(RuntimeError("Harness restarted."))
             self.tools = []
+            self.unsupported_tools = []
             self.initial_prompts = None
             self.initial_request = None
             self._tools_ready = anyio.Event()
@@ -328,18 +332,28 @@ class HarnessSessionBridge:
 
     def _render_initialize_instructions(self) -> str | None:
         prompts = self.initial_prompts
-        if prompts is None:
-            return None
         tag_prefix = (self.launcher_name or "harness").replace("-", "_")
-        sections = [
-            text
-            for text in [
-                prompts.instructions,
-                _tagged_block(tag_prefix, "harness_context", prompts.harness_context),
-                _tagged_block(tag_prefix, "initial_user_prompt", prompts.user_prompt),
-            ]
-            if text
-        ]
+        sections = []
+        if prompts is not None:
+            sections.extend(
+                text
+                for text in [
+                    prompts.instructions,
+                    _tagged_block(tag_prefix, "harness_context", prompts.harness_context),
+                    _tagged_block(tag_prefix, "initial_user_prompt", prompts.user_prompt),
+                ]
+                if text
+            )
+        if self.unsupported_tools:
+            unsupported_tool_lines = "\n".join(tool.get("name") or tool.get("type") for tool in self.unsupported_tools)
+            sections.append(
+                "<|harness_to_mcp_notice_start|>\n"
+                "This environment is powered by [harness_to_mcp](https://github.com/on-panda/harness_to_mcp), "
+                "which exposes the harness's internal tools through standard MCP. "
+                "The following tools are unavailable because they are incompatible with standard MCP:\n"
+                f"{unsupported_tool_lines}\n"
+                "<|harness_to_mcp_notice_end|>"
+            )
         if not sections:
             return None
         return "\n\n".join(sections)
