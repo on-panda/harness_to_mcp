@@ -26,7 +26,10 @@ def test_opencode_launcher_uses_temp_xdg_dirs() -> None:
         assert runtime.env["XDG_STATE_HOME"]
         assert Path(runtime.env["XDG_CONFIG_HOME"]) == root / "config"
         assert runtime.log_path == root / "logs" / "opencode.log"
-        assert runtime.command[:5] == ["opencode", "run", "--dangerously-skip-permissions", "--model", "harness_to_mcp/harness_to_mcp_hijack_api"]
+        assert runtime.command[:6] == ["opencode", "run", "--pure", "--dangerously-skip-permissions", "--model", "harness_to_mcp/harness_to_mcp_hijack_api"]
+        config = json.loads((root / "config" / "opencode" / "opencode.json").read_text(encoding="utf-8"))
+        assert config["share"] == "disabled"
+        assert config["autoupdate"] is False
     finally:
         runtime.cleanup()
 
@@ -42,6 +45,9 @@ def test_codex_launcher_uses_temp_home_and_responses_provider() -> None:
         assert "--dangerously-bypass-approvals-and-sandbox" in joined
         assert "wire_api=\"responses\"" in joined
         assert "http://127.0.0.1:9330/harness_to_mcp/v1" in joined
+        assert "features.multi_agent=false" in joined
+        assert "features.apply_patch_freeform=false" in joined
+        assert "features.apps=false" in joined
     finally:
         runtime.cleanup()
 
@@ -55,6 +61,8 @@ def test_claude_launcher_uses_temp_config_dir() -> None:
         assert runtime.env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:9330/harness_to_mcp"
         assert runtime.env["ANTHROPIC_API_KEY"] == "token-1"
         assert runtime.command[0] == "claude"
+        assert "--bare" not in runtime.command
+        assert "--no-chrome" in runtime.command
         assert "--dangerously-skip-permissions" in runtime.command
         assert runtime.command[runtime.command.index("--permission-mode") + 1] == "bypassPermissions"
     finally:

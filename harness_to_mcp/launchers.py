@@ -96,6 +96,7 @@ class OpencodeLauncher(HarnessLauncher):
             command=[
                 "opencode",
                 "run",
+                "--pure",
                 "--dangerously-skip-permissions",
                 "--model",
                 f"{HIJACK_PROVIDER_ID}/{HIJACK_MODEL_ID}",
@@ -135,6 +136,12 @@ class CodexLauncher(HarnessLauncher):
             'model_provider="harness_to_mcp"',
             "-c",
             f'model_providers.harness_to_mcp={{name="HarnessToMcp",base_url="{base_url}",env_key="{CODEX_SESSION_TOKEN_ENV}",wire_api="responses"}}',
+            "-c",
+            "features.multi_agent=false",
+            "-c",
+            "features.apply_patch_freeform=false",
+            "-c",
+            "features.apps=false",
             prompt,
         ]
         return HarnessRuntime(session_token=session_token, tempdir=None, env=env, command=command, log_path=log_dir / "codex.log")
@@ -158,6 +165,8 @@ class ClaudeLauncher(HarnessLauncher):
         command = [
             "claude",
             "-p",
+            "--no-chrome",
+            "--no-session-persistence",
             "--output-format",
             "stream-json",
             "--verbose",
@@ -331,6 +340,8 @@ def _opencode_config(base_url: str, session_token: str) -> str:
         {
             "$schema": "https://opencode.ai/config.json",
             "model": f"{HIJACK_PROVIDER_ID}/{HIJACK_MODEL_ID}",
+            "share": "disabled",
+            "autoupdate": False,
             "provider": {
                 HIJACK_PROVIDER_ID: {
                     "name": "HarnessToMcp",

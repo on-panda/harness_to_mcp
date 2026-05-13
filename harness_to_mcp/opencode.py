@@ -19,6 +19,7 @@ def build_run_command(*, prompt: str = LAUNCH_PROMPT, json_format: bool = True) 
     return [
         "opencode",
         "run",
+        "--pure",
         "--dangerously-skip-permissions",
         "--model",
         f"{HIJACK_PROVIDER_ID}/{HIJACK_MODEL_ID}",
